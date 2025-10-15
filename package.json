@@ -7,14 +7,17 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
-  "keywords": ["cloudflare", "worker", "excel"],
+  "keywords": [
+    "cloudflare",
+    "worker",
+    "excel"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "wrangler": "^3.0.0"
+    "wrangler": "^4.43.0"
   }
 }
-

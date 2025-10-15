@@ -512,7 +512,6 @@ export default {
     <div class="container">
         <div class="header">
             <h1>📊 DBMF Holdings</h1>
-            <p>Securities with Tickers</p>
         </div>
         <div class="table-container">
             ${htmlTable}
