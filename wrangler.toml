@@ -1,0 +1,9 @@
+name = "dbmfview"
+main = "src/index.js"
+compatibility_date = "2023-12-01"
+
+# Uncomment to use a custom route
+# routes = [
+#   { pattern = "example.com/*", zone_name = "example.com" }
+# ]
+
