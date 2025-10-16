@@ -78,8 +78,6 @@ export default {
           'CUSIP': row['CUSIP'] || '',
           'Ticker': row['TICKER'] || '',
           'Description': row['DESCRIPTION'] || '',
-          'Shares': formatNumber(row['SHARES']),
-          'Market Value': formatCurrency(row['BASE_MV']),
           'Holdings %': formatPercent(row['PCT_HOLDINGS']),
           'Daily Change': item.dailyChangeStr || 'N/A',
           'Contribution': item.dailyChangeStr !== 'N/A' ? formatChangePercent(item.contribution * 100) : 'N/A'
@@ -376,11 +374,9 @@ export default {
         }
         
         /* Right-align numeric columns */
-        #holdings-table td:nth-child(5),  /* Shares */
-        #holdings-table td:nth-child(6),  /* Market Value */
-        #holdings-table td:nth-child(7),  /* Holdings % */
-        #holdings-table td:nth-child(8),  /* Daily Change */
-        #holdings-table td:nth-child(9) { /* Contribution */
+        #holdings-table td:nth-child(5),  /* Holdings % */
+        #holdings-table td:nth-child(6),  /* Daily Change */
+        #holdings-table td:nth-child(7) { /* Contribution */
             text-align: right;
             font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
         }
@@ -388,21 +384,19 @@ export default {
         /* Right-align headers for numeric columns */
         #holdings-table th:nth-child(5),
         #holdings-table th:nth-child(6),
-        #holdings-table th:nth-child(7),
-        #holdings-table th:nth-child(8),
-        #holdings-table th:nth-child(9) {
+        #holdings-table th:nth-child(7) {
             text-align: right;
         }
         
         /* Color coding for Holdings % column */
-        .positive-holding td:nth-child(7) {
+        .positive-holding td:nth-child(5) {
             background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
             color: #2e7d32;
             font-weight: 600;
             box-shadow: inset 0 0 0 1px rgba(76, 175, 80, 0.2);
         }
         
-        .negative-holding td:nth-child(7) {
+        .negative-holding td:nth-child(5) {
             background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
             color: #c62828;
             font-weight: 600;
@@ -429,12 +423,12 @@ export default {
             transition: background-color 0.2s ease;
         }
         
-        .positive-holding:hover td:nth-child(7) {
+        .positive-holding:hover td:nth-child(5) {
             background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 100%);
             box-shadow: inset 0 0 0 1px rgba(76, 175, 80, 0.3);
         }
         
-        .negative-holding:hover td:nth-child(7) {
+        .negative-holding:hover td:nth-child(5) {
             background: linear-gradient(135deg, #ffcdd2 0%, #ef9a9a 100%);
             box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.3);
         }
@@ -499,21 +493,52 @@ export default {
         }
         
         @media (max-width: 768px) {
-            .header h1 {
-                font-size: 1.8em;
+            body {
+                padding: 10px;
             }
             
-            .table-container {
+            .header {
                 padding: 15px;
             }
             
+            .header h1 {
+                font-size: 1.3em;
+            }
+            
+            .header p {
+                font-size: 0.85em;
+            }
+            
+            .table-container {
+                padding: 8px;
+                overflow-x: visible;
+            }
+            
             #holdings-table {
-                font-size: 12px;
+                font-size: 9px;
             }
             
             #holdings-table th,
             #holdings-table td {
-                padding: 8px 10px;
+                padding: 4px 3px;
+                white-space: nowrap;
+            }
+            
+            /* Make description column wrappable and limit width */
+            #holdings-table td:nth-child(4) {
+                max-width: 80px;
+                white-space: normal;
+                font-size: 8px;
+                line-height: 1.2;
+            }
+            
+            .footer {
+                padding: 10px;
+                font-size: 11px;
+            }
+            
+            .footer .timestamp {
+                font-size: 9px;
             }
         }
     </style>
