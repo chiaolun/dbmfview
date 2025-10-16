@@ -494,51 +494,79 @@ export default {
         
         @media (max-width: 768px) {
             body {
-                padding: 10px;
+                padding: 5px;
+            }
+            
+            .container {
+                border-radius: 8px;
             }
             
             .header {
-                padding: 15px;
+                padding: 10px;
             }
             
             .header h1 {
-                font-size: 1.3em;
+                font-size: 1.1em;
             }
             
             .header p {
-                font-size: 0.85em;
+                font-size: 0.7em;
             }
             
             .table-container {
-                padding: 8px;
-                overflow-x: visible;
+                padding: 3px;
+                overflow-x: auto;
             }
             
             #holdings-table {
-                font-size: 9px;
+                font-size: 7px;
             }
             
             #holdings-table th,
             #holdings-table td {
-                padding: 4px 3px;
+                padding: 2px 2px;
                 white-space: nowrap;
+            }
+            
+            /* Make Date and CUSIP columns smaller */
+            #holdings-table th:nth-child(1),
+            #holdings-table td:nth-child(1),
+            #holdings-table th:nth-child(2),
+            #holdings-table td:nth-child(2) {
+                font-size: 6px;
             }
             
             /* Make description column wrappable and limit width */
             #holdings-table td:nth-child(4) {
-                max-width: 80px;
+                max-width: 60px;
                 white-space: normal;
-                font-size: 8px;
-                line-height: 1.2;
+                font-size: 6px;
+                line-height: 1.1;
+            }
+            
+            #holdings-table th:nth-child(4) {
+                font-size: 6px;
+            }
+            
+            /* Make ticker column slightly larger for readability */
+            #holdings-table th:nth-child(3),
+            #holdings-table td:nth-child(3) {
+                font-size: 7px;
+                font-weight: 600;
             }
             
             .footer {
-                padding: 10px;
-                font-size: 11px;
+                padding: 8px;
+                font-size: 9px;
             }
             
             .footer .timestamp {
-                font-size: 9px;
+                font-size: 7px;
+            }
+            
+            .total-row td {
+                padding: 3px 2px;
+                font-size: 0.95em;
             }
         }
     </style>
