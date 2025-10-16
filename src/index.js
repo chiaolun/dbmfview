@@ -528,12 +528,22 @@ export default {
                 white-space: nowrap;
             }
             
+            /* Consistent header sizing - all at 6px */
+            #holdings-table th {
+                font-size: 6px;
+                padding: 3px 2px;
+            }
+            
             /* Make Date and CUSIP columns smaller */
-            #holdings-table th:nth-child(1),
             #holdings-table td:nth-child(1),
-            #holdings-table th:nth-child(2),
             #holdings-table td:nth-child(2) {
                 font-size: 6px;
+            }
+            
+            /* Make ticker column slightly larger for readability */
+            #holdings-table td:nth-child(3) {
+                font-size: 7px;
+                font-weight: 600;
             }
             
             /* Make description column wrappable and limit width */
@@ -542,17 +552,6 @@ export default {
                 white-space: normal;
                 font-size: 6px;
                 line-height: 1.1;
-            }
-            
-            #holdings-table th:nth-child(4) {
-                font-size: 6px;
-            }
-            
-            /* Make ticker column slightly larger for readability */
-            #holdings-table th:nth-child(3),
-            #holdings-table td:nth-child(3) {
-                font-size: 7px;
-                font-weight: 600;
             }
             
             .footer {
