@@ -164,12 +164,22 @@ export default {
         // Pattern: commodity letters + single letter month code + year digits
         const match = ticker.match(/^([A-Z]+?)([A-Z]\d+)$/);
         if (match) {
-          return match[1] + '=F';
+          let commodityPrefix = match[1];
+          // Special case: MES should be replaced with MME for Yahoo Finance
+          if (commodityPrefix === 'MES') {
+            commodityPrefix = 'MME';
+          }
+          return commodityPrefix + '=F';
         }
         // Fallback: if pattern doesn't match, just use all letters
         const simpleMatch = ticker.match(/^([A-Z]+)/);
         if (simpleMatch) {
-          return simpleMatch[1] + '=F';
+          let commodityPrefix = simpleMatch[1];
+          // Special case: MES should be replaced with MME for Yahoo Finance
+          if (commodityPrefix === 'MES') {
+            commodityPrefix = 'MME';
+          }
+          return commodityPrefix + '=F';
         }
         // If no match, return original ticker
         return ticker;
