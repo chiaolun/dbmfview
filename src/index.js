@@ -109,10 +109,62 @@ export default {
         return prices;
       }
       
+      // Fetch price from Barchart HTML page for MSCI indices
+      // root: 'DI' for MSCI EAFE (MFS), 'M0' for MSCI Emerging Markets (MME)
+      async function fetchBarchartPrice(root) {
+        try {
+          // Fetch the HTML page which has embedded JSON data
+          const url = `https://www.barchart.com/futures/quotes/${root}*0/futures-prices`;
+          const response = await fetch(url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+              'Accept': 'text/html'
+            }
+          });
+          
+          if (!response.ok) {
+            console.error(`Barchart HTTP ${response.status} for root ${root}`);
+            return 'N/A';
+          }
+          
+          const html = await response.text();
+          
+          // Extract percentChange from embedded JSON in the HTML
+          // Pattern matches: "percentChange":"-0.54%" or "percentChange":"1.23%"
+          const match = html.match(/"percentChange":"([^"]+)"/);
+          
+          if (match && match[1]) {
+            const percentStr = match[1];
+            // Parse the percentage string (e.g., "-0.54%" -> -0.54)
+            const percentValue = parseFloat(percentStr.replace('%', ''));
+            if (!isNaN(percentValue)) {
+              return formatChangePercent(percentValue);
+            }
+          }
+          
+          return 'N/A';
+        } catch (error) {
+          console.error(`Error fetching Barchart price for root ${root}:`, error);
+          return 'N/A';
+        }
+      }
+      
       async function fetchSinglePrice(ticker) {
         try {
+          // Extract commodity prefix from ticker (e.g., CLZ5 -> CL, MFSZ5 -> MFS)
+          const match = ticker.match(/^([A-Z]+?)([A-Z]\d+)$/);
+          const commodityPrefix = match ? match[1] : ticker.match(/^([A-Z]+)/)?.[1] || ticker;
+          
+          // Use Barchart for MSCI indices (MFS and MES) since Yahoo Finance no longer supports them
+          if (commodityPrefix === 'MFS') {
+            return await fetchBarchartPrice('DI');
+          }
+          if (commodityPrefix === 'MES') {
+            return await fetchBarchartPrice('M0');
+          }
+          
           // Convert futures contract symbol to Yahoo Finance format
-          // e.g., CLZ5 -> CL=F, GCZ5 -> GC=F, MFSZ5 -> MFS=F
+          // e.g., CLZ5 -> CL=F, GCZ5 -> GC=F
           const yahooTicker = convertToYahooSymbol(ticker);
           
           // Try Yahoo Finance quote API
@@ -162,21 +214,13 @@ export default {
         // Pattern: commodity letters + single letter month code + year digits
         const match = ticker.match(/^([A-Z]+?)([A-Z]\d+)$/);
         if (match) {
-          let commodityPrefix = match[1];
-          // Special case: MES should be replaced with MME for Yahoo Finance
-          if (commodityPrefix === 'MES') {
-            commodityPrefix = 'MME';
-          }
+          const commodityPrefix = match[1];
           return commodityPrefix + '=F';
         }
         // Fallback: if pattern doesn't match, just use all letters
         const simpleMatch = ticker.match(/^([A-Z]+)/);
         if (simpleMatch) {
-          let commodityPrefix = simpleMatch[1];
-          // Special case: MES should be replaced with MME for Yahoo Finance
-          if (commodityPrefix === 'MES') {
-            commodityPrefix = 'MME';
-          }
+          const commodityPrefix = simpleMatch[1];
           return commodityPrefix + '=F';
         }
         // If no match, return original ticker
