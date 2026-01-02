@@ -2,6 +2,20 @@ import * as XLSX from 'xlsx';
 
 const EXCEL_URL = 'https://imgpfunds.com/wp-content/uploads/pdfs/holdings/DBMF-Holdings.xlsx';
 
+// Symbol mapping from DBMF tickers to Barchart root symbols
+const BARCHART_SYMBOL_MAP = {
+  'CL': 'CL',   // Crude Oil
+  'ES': 'ES',   // E-mini S&P 500
+  'MES': 'M0',  // MSCI Emerging Markets
+  'JY': 'J6',   // Japanese Yen
+  'MFS': 'DI',  // MSCI EAFE
+  'EC': 'E6',   // Euro
+  'GC': 'GC',   // Gold
+  'US': 'ZB',   // 30-Year Treasury Bond
+  'TY': 'ZN',   // 10-Year Treasury Note
+  'TU': 'TU',   // 2-Year Treasury Note
+};
+
 export default {
   async fetch(request, env, ctx) {
     try {
@@ -109,8 +123,7 @@ export default {
         return prices;
       }
       
-      // Fetch price from Barchart HTML page for MSCI indices
-      // root: 'DI' for MSCI EAFE (MFS), 'M0' for MSCI Emerging Markets (MME)
+      // Fetch price from Barchart HTML page
       async function fetchBarchartPrice(root) {
         try {
           // Fetch the HTML page which has embedded JSON data
@@ -130,11 +143,15 @@ export default {
           const html = await response.text();
           
           // Extract percentChange from embedded JSON in the HTML
-          // Pattern matches: "percentChange":"-0.54%" or "percentChange":"1.23%"
+          // Pattern matches: "percentChange":"-0.54%" or "percentChange":"1.23%" or "unch"
           const match = html.match(/"percentChange":"([^"]+)"/);
           
           if (match && match[1]) {
             const percentStr = match[1];
+            // Handle "unch" (unchanged) as 0%
+            if (percentStr.toLowerCase() === 'unch') {
+              return formatChangePercent(0);
+            }
             // Parse the percentage string (e.g., "-0.54%" -> -0.54)
             const percentValue = parseFloat(percentStr.replace('%', ''));
             if (!isNaN(percentValue)) {
@@ -155,76 +172,20 @@ export default {
           const match = ticker.match(/^([A-Z]+?)([A-Z]\d+)$/);
           const commodityPrefix = match ? match[1] : ticker.match(/^([A-Z]+)/)?.[1] || ticker;
           
-          // Use Barchart for MSCI indices (MFS and MES) since Yahoo Finance no longer supports them
-          if (commodityPrefix === 'MFS') {
-            return await fetchBarchartPrice('DI');
-          }
-          if (commodityPrefix === 'MES') {
-            return await fetchBarchartPrice('M0');
-          }
+          // Look up Barchart root symbol from mapping
+          const barchartRoot = BARCHART_SYMBOL_MAP[commodityPrefix];
           
-          // Convert futures contract symbol to Yahoo Finance format
-          // e.g., CLZ5 -> CL=F, GCZ5 -> GC=F
-          const yahooTicker = convertToYahooSymbol(ticker);
-          
-          // Try Yahoo Finance quote API
-          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}`;
-          const response = await fetch(url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-              'Accept': 'application/json'
-            }
-          });
-          
-          if (!response.ok) {
-            console.error(`HTTP ${response.status} for ${yahooTicker}`);
-            return `N/A`;
+          if (barchartRoot) {
+            return await fetchBarchartPrice(barchartRoot);
           }
           
-          const data = await response.json();
-          const meta = data?.chart?.result?.[0]?.meta;
-          
-          if (meta) {
-            // Calculate percentage change from previous close
-            const currentPrice = meta.regularMarketPrice;
-            const previousClose = meta.chartPreviousClose || meta.previousClose;
-            
-            if (currentPrice && previousClose) {
-              const changePercent = ((currentPrice - previousClose) / previousClose) * 100;
-              return formatChangePercent(changePercent);
-            }
-          }
-          
-          if (data?.chart?.error) {
-            console.error(`Yahoo Finance error for ${yahooTicker}:`, data.chart.error);
-          }
-          
-          return `N/A`;
+          // Fallback: try the original prefix directly on Barchart
+          console.warn(`Unknown symbol prefix: ${commodityPrefix}, trying directly on Barchart`);
+          return await fetchBarchartPrice(commodityPrefix);
         } catch (error) {
           console.error(`Error fetching price for ${ticker}:`, error);
           return 'N/A';
         }
-      }
-      
-      function convertToYahooSymbol(ticker) {
-        // Extract the commodity prefix, excluding the month code
-        // e.g., CLZ5 -> CL (Z is month, 5 is year)
-        //       GCZ5 -> GC
-        //       MFSZ5 -> MFS
-        // Pattern: commodity letters + single letter month code + year digits
-        const match = ticker.match(/^([A-Z]+?)([A-Z]\d+)$/);
-        if (match) {
-          const commodityPrefix = match[1];
-          return commodityPrefix + '=F';
-        }
-        // Fallback: if pattern doesn't match, just use all letters
-        const simpleMatch = ticker.match(/^([A-Z]+)/);
-        if (simpleMatch) {
-          const commodityPrefix = simpleMatch[1];
-          return commodityPrefix + '=F';
-        }
-        // If no match, return original ticker
-        return ticker;
       }
       
       // Helper functions for formatting
