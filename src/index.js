@@ -13,7 +13,7 @@ const BARCHART_SYMBOL_MAP = {
   'GC': 'GC',   // Gold
   'US': 'ZB',   // 30-Year Treasury Bond
   'TY': 'ZN',   // 10-Year Treasury Note
-  'TU': 'TU',   // 2-Year Treasury Note
+  'TU': 'ZT',   // 2-Year Treasury Note (US 2YR NOTE CBT)
 };
 
 export default {
