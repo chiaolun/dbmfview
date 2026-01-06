@@ -232,7 +232,18 @@ export default {
         }).format(num);
         return formatted + '%';
       }
-      
+
+      function getBarchartUrl(ticker) {
+        // Extract commodity prefix from ticker (e.g., CLZ5 -> CL, MFSZ5 -> MFS)
+        const match = ticker.match(/^([A-Z]+?)([A-Z]\d+)$/);
+        const commodityPrefix = match ? match[1] : ticker.match(/^([A-Z]+)/)?.[1] || ticker;
+
+        // Look up Barchart root symbol from mapping
+        const barchartRoot = BARCHART_SYMBOL_MAP[commodityPrefix] || commodityPrefix;
+
+        return `https://www.barchart.com/futures/quotes/${barchartRoot}*0/futures-prices`;
+      }
+
       function buildColorCodedTable(formattedRows, dataRows, totalContribution) {
         if (formattedRows.length === 0) {
           return '<p>No holdings with tickers found.</p>';
@@ -263,8 +274,8 @@ export default {
           headers.forEach((header, colIndex) => {
             // Add special class for Daily Change and Contribution columns to color them
             let tdClass = '';
-            const cellValue = row[header];
-            
+            let cellValue = row[header];
+
             if ((header === 'Daily Change' || header === 'Contribution') && cellValue && cellValue !== 'N/A') {
               const numericValue = parseFloat(cellValue.replace('%', ''));
               if (numericValue > 0) {
@@ -273,6 +284,13 @@ export default {
                 tdClass = ' class="negative-change"';
               }
             }
+
+            // Wrap ticker in a link to Barchart source page
+            if (header === 'Ticker' && cellValue) {
+              const barchartUrl = getBarchartUrl(cellValue);
+              cellValue = `<a href="${barchartUrl}" target="_blank" class="ticker-link">${cellValue}</a>`;
+            }
+
             html += `<td${tdClass}>${cellValue}</td>\n`;
           });
           
@@ -486,9 +504,20 @@ export default {
             text-decoration: none;
             font-weight: 600;
         }
-        
+
         .footer a:hover {
             text-decoration: underline;
+        }
+
+        .ticker-link {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .ticker-link:hover {
+            text-decoration: underline;
+            color: #764ba2;
         }
         
         .timestamp {
