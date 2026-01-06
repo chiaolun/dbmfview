@@ -166,22 +166,17 @@ export default {
         }
       }
       
+      // Extract Barchart root symbol from a DBMF ticker (e.g., CLZ5 -> CL, MFSZ5 -> DI)
+      function getBarchartRoot(ticker) {
+        const match = ticker.match(/^([A-Z]+?)([A-Z]\d+)$/);
+        const commodityPrefix = match ? match[1] : ticker.match(/^([A-Z]+)/)?.[1] || ticker;
+        return BARCHART_SYMBOL_MAP[commodityPrefix] || commodityPrefix;
+      }
+
       async function fetchSinglePrice(ticker) {
         try {
-          // Extract commodity prefix from ticker (e.g., CLZ5 -> CL, MFSZ5 -> MFS)
-          const match = ticker.match(/^([A-Z]+?)([A-Z]\d+)$/);
-          const commodityPrefix = match ? match[1] : ticker.match(/^([A-Z]+)/)?.[1] || ticker;
-          
-          // Look up Barchart root symbol from mapping
-          const barchartRoot = BARCHART_SYMBOL_MAP[commodityPrefix];
-          
-          if (barchartRoot) {
-            return await fetchBarchartPrice(barchartRoot);
-          }
-          
-          // Fallback: try the original prefix directly on Barchart
-          console.warn(`Unknown symbol prefix: ${commodityPrefix}, trying directly on Barchart`);
-          return await fetchBarchartPrice(commodityPrefix);
+          const barchartRoot = getBarchartRoot(ticker);
+          return await fetchBarchartPrice(barchartRoot);
         } catch (error) {
           console.error(`Error fetching price for ${ticker}:`, error);
           return 'N/A';
@@ -234,14 +229,7 @@ export default {
       }
 
       function getBarchartUrl(ticker) {
-        // Extract commodity prefix from ticker (e.g., CLZ5 -> CL, MFSZ5 -> MFS)
-        const match = ticker.match(/^([A-Z]+?)([A-Z]\d+)$/);
-        const commodityPrefix = match ? match[1] : ticker.match(/^([A-Z]+)/)?.[1] || ticker;
-
-        // Look up Barchart root symbol from mapping
-        const barchartRoot = BARCHART_SYMBOL_MAP[commodityPrefix] || commodityPrefix;
-
-        return `https://www.barchart.com/futures/quotes/${barchartRoot}*0/futures-prices`;
+        return `https://www.barchart.com/futures/quotes/${getBarchartRoot(ticker)}*0/futures-prices`;
       }
 
       function buildColorCodedTable(formattedRows, dataRows, totalContribution) {
