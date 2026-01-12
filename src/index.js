@@ -18,6 +18,118 @@ const BARCHART_SYMBOL_MAP = {
 
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // Handle API endpoint for price updates only
+    if (url.pathname === '/api/prices') {
+      return handlePriceUpdate(request, env, ctx);
+    }
+
+    // Handle main page
+    return handleMainPage(request, env, ctx);
+  }
+};
+
+// API endpoint to fetch only price updates
+async function handlePriceUpdate(request, env, ctx) {
+  try {
+    const url = new URL(request.url);
+    const tickersParam = url.searchParams.get('tickers');
+
+    if (!tickersParam) {
+      return new Response(JSON.stringify({ error: 'Missing tickers parameter' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    const tickers = tickersParam.split(',');
+    const prices = {};
+
+    // Fetch prices in parallel
+    const batchSize = 10;
+    for (let i = 0; i < tickers.length; i += batchSize) {
+      const batch = tickers.slice(i, i + batchSize);
+      const batchPromises = batch.map(ticker => fetchSinglePriceForAPI(ticker));
+      const batchResults = await Promise.all(batchPromises);
+
+      batch.forEach((ticker, index) => {
+        prices[ticker] = batchResults[index];
+      });
+    }
+
+    return new Response(JSON.stringify({ prices, timestamp: new Date().toISOString() }), {
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+// Helper for API price fetching
+async function fetchSinglePriceForAPI(ticker) {
+  try {
+    const barchartRoot = getBarchartRootForAPI(ticker);
+    return await fetchBarchartPriceForAPI(barchartRoot);
+  } catch (error) {
+    console.error(`Error fetching price for ${ticker}:`, error);
+    return { change: 'N/A', numeric: null };
+  }
+}
+
+function getBarchartRootForAPI(ticker) {
+  const match = ticker.match(/^([A-Z]+?)([A-Z]\d+)$/);
+  const commodityPrefix = match ? match[1] : ticker.match(/^([A-Z]+)/)?.[1] || ticker;
+  return BARCHART_SYMBOL_MAP[commodityPrefix] || commodityPrefix;
+}
+
+async function fetchBarchartPriceForAPI(root) {
+  try {
+    const url = `https://www.barchart.com/futures/quotes/${root}*0/futures-prices`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'text/html'
+      }
+    });
+
+    if (!response.ok) {
+      return { change: 'N/A', numeric: null };
+    }
+
+    const html = await response.text();
+    const match = html.match(/"percentChange":"([^"]+)"/);
+
+    if (match && match[1]) {
+      const percentStr = match[1];
+      if (percentStr.toLowerCase() === 'unch') {
+        return { change: '+0.00%', numeric: 0 };
+      }
+      const percentValue = parseFloat(percentStr.replace('%', ''));
+      if (!isNaN(percentValue)) {
+        const formatted = new Intl.NumberFormat('en-US', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+          signDisplay: 'always'
+        }).format(percentValue);
+        return { change: formatted + '%', numeric: percentValue };
+      }
+    }
+
+    return { change: 'N/A', numeric: null };
+  } catch (error) {
+    return { change: 'N/A', numeric: null };
+  }
+}
+
+async function handleMainPage(request, env, ctx) {
     try {
       // Fetch the Excel file
       const response = await fetch(EXCEL_URL);
@@ -254,23 +366,33 @@ export default {
         // Add data rows
         formattedRows.forEach((row, index) => {
           const originalPercent = dataRows[index].original['PCT_HOLDINGS'];
-          const rowClass = originalPercent > 0 ? 'positive-holding' : 
+          const ticker = row['Ticker'];
+          const rowClass = originalPercent > 0 ? 'positive-holding' :
                           originalPercent < 0 ? 'negative-holding' : '';
-          
-          html += `<tr${rowClass ? ` class="${rowClass}"` : ''}>\n`;
-          
+
+          // Add data attributes for JS price updates
+          html += `<tr${rowClass ? ` class="${rowClass}"` : ''} data-ticker="${ticker}" data-holdings="${originalPercent}">\n`;
+
           headers.forEach((header, colIndex) => {
             // Add special class for Daily Change and Contribution columns to color them
             let tdClass = '';
+            let tdDataAttr = '';
             let cellValue = row[header];
 
             if ((header === 'Daily Change' || header === 'Contribution') && cellValue && cellValue !== 'N/A') {
               const numericValue = parseFloat(cellValue.replace('%', ''));
               if (numericValue > 0) {
-                tdClass = ' class="positive-change"';
+                tdClass = 'positive-change';
               } else if (numericValue < 0) {
-                tdClass = ' class="negative-change"';
+                tdClass = 'negative-change';
               }
+            }
+
+            // Add data attribute for cells that need JS updates
+            if (header === 'Daily Change') {
+              tdDataAttr = ' data-col="change"';
+            } else if (header === 'Contribution') {
+              tdDataAttr = ' data-col="contribution"';
             }
 
             // Wrap ticker in a link to Barchart source page
@@ -279,9 +401,9 @@ export default {
               cellValue = `<a href="${barchartUrl}" target="_blank" class="ticker-link">${cellValue}</a>`;
             }
 
-            html += `<td${tdClass}>${cellValue}</td>\n`;
+            html += `<td${tdClass ? ` class="${tdClass}"` : ''}${tdDataAttr}>${cellValue}</td>\n`;
           });
-          
+
           html += '</tr>\n';
         });
         
@@ -289,9 +411,9 @@ export default {
         html += '<tr class="total-row">\n';
         headers.forEach((header, index) => {
           if (header === 'Contribution') {
-            const totalClass = totalContribution > 0 ? 'positive-change' : 
+            const totalClass = totalContribution > 0 ? 'positive-change' :
                               totalContribution < 0 ? 'negative-change' : '';
-            html += `<td class="${totalClass}">${formatChangePercent(totalContribution * 100)}</td>\n`;
+            html += `<td class="${totalClass}" data-col="total-contribution">${formatChangePercent(totalContribution * 100)}</td>\n`;
           } else if (index === 0) {
             html += `<td><strong>TOTAL</strong></td>\n`;
           } else {
@@ -513,7 +635,68 @@ export default {
             font-size: 12px;
             opacity: 0.8;
         }
-        
+
+        .refresh-status {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .countdown {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .countdown-number {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 2px 8px;
+            border-radius: 10px;
+            min-width: 24px;
+            text-align: center;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+        }
+
+        .refresh-indicator {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            color: #667eea;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .refresh-indicator.active {
+            display: inline-flex;
+        }
+
+        .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid #e0e0e0;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .last-refresh {
+            font-size: 11px;
+            color: #888;
+        }
+
         @media (max-width: 768px) {
             body {
                 padding: 5px;
@@ -580,11 +763,24 @@ export default {
                 padding: 8px;
                 font-size: 9px;
             }
-            
+
             .footer .timestamp {
                 font-size: 7px;
             }
-            
+
+            .refresh-status {
+                gap: 8px;
+            }
+
+            .countdown {
+                padding: 4px 8px;
+                font-size: 10px;
+            }
+
+            .last-refresh {
+                font-size: 9px;
+            }
+
             .total-row td {
                 padding: 3px 2px;
                 font-size: 0.95em;
@@ -602,9 +798,160 @@ export default {
         </div>
         <div class="footer">
             <p>Data source: <a href="${EXCEL_URL}" target="_blank">DBMF-Holdings.xlsx</a></p>
-            <p class="timestamp">Last updated: ${new Date().toUTCString()}</p>
+            <p class="timestamp">Asset weights updated: ${new Date().toUTCString()}</p>
+            <div class="refresh-status">
+                <div class="countdown">
+                    <span>Next price refresh in</span>
+                    <span class="countdown-number" id="countdown">60</span>
+                    <span>s</span>
+                </div>
+                <div class="refresh-indicator" id="refresh-indicator">
+                    <div class="spinner"></div>
+                    <span>Refreshing prices...</span>
+                </div>
+                <div class="last-refresh">
+                    <span>Prices last refreshed: </span>
+                    <span id="last-refresh-time">--</span>
+                </div>
+            </div>
         </div>
     </div>
+    <script>
+    (function() {
+        // Get all tickers from the table
+        const tickers = Array.from(document.querySelectorAll('#holdings-table tbody tr[data-ticker]'))
+            .map(row => row.dataset.ticker)
+            .filter(t => t);
+
+        let countdownValue = 60;
+        let countdownInterval;
+
+        const countdownEl = document.getElementById('countdown');
+        const refreshIndicator = document.getElementById('refresh-indicator');
+        const lastRefreshEl = document.getElementById('last-refresh-time');
+
+        // Format time in viewer's timezone
+        function formatLocalTime(date) {
+            return date.toLocaleTimeString(undefined, {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+
+        // Update the countdown display
+        function updateCountdown() {
+            countdownEl.textContent = countdownValue;
+        }
+
+        // Calculate seconds until next minute boundary
+        function getSecondsUntilNextMinute() {
+            const now = new Date();
+            return 60 - now.getSeconds();
+        }
+
+        // Format percentage with sign
+        function formatChangePercent(num) {
+            if (num === null || num === undefined) return 'N/A';
+            const sign = num >= 0 ? '+' : '';
+            return sign + num.toFixed(2) + '%';
+        }
+
+        // Update cell styling based on value
+        function updateCellStyle(cell, value) {
+            cell.classList.remove('positive-change', 'negative-change');
+            if (value > 0) {
+                cell.classList.add('positive-change');
+            } else if (value < 0) {
+                cell.classList.add('negative-change');
+            }
+        }
+
+        // Fetch and update prices
+        async function refreshPrices() {
+            if (tickers.length === 0) return;
+
+            refreshIndicator.classList.add('active');
+
+            try {
+                const response = await fetch('/api/prices?tickers=' + tickers.join(','));
+                const data = await response.json();
+
+                if (data.prices) {
+                    let totalContribution = 0;
+
+                    // Update each row
+                    document.querySelectorAll('#holdings-table tbody tr[data-ticker]').forEach(row => {
+                        const ticker = row.dataset.ticker;
+                        const holdings = parseFloat(row.dataset.holdings);
+                        const priceData = data.prices[ticker];
+
+                        if (priceData) {
+                            // Update Daily Change cell
+                            const changeCell = row.querySelector('td[data-col="change"]');
+                            if (changeCell) {
+                                changeCell.textContent = priceData.change;
+                                if (priceData.numeric !== null) {
+                                    updateCellStyle(changeCell, priceData.numeric);
+                                } else {
+                                    changeCell.classList.remove('positive-change', 'negative-change');
+                                }
+                            }
+
+                            // Update Contribution cell
+                            const contribCell = row.querySelector('td[data-col="contribution"]');
+                            if (contribCell && priceData.numeric !== null) {
+                                const contribution = holdings * (priceData.numeric / 100);
+                                totalContribution += contribution;
+                                contribCell.textContent = formatChangePercent(contribution * 100);
+                                updateCellStyle(contribCell, contribution);
+                            } else if (contribCell) {
+                                contribCell.textContent = 'N/A';
+                                contribCell.classList.remove('positive-change', 'negative-change');
+                            }
+                        }
+                    });
+
+                    // Update total contribution
+                    const totalCell = document.querySelector('td[data-col="total-contribution"]');
+                    if (totalCell) {
+                        totalCell.textContent = formatChangePercent(totalContribution * 100);
+                        updateCellStyle(totalCell, totalContribution);
+                    }
+
+                    // Update last refresh time in viewer's timezone
+                    lastRefreshEl.textContent = formatLocalTime(new Date());
+                }
+            } catch (error) {
+                console.error('Error refreshing prices:', error);
+            } finally {
+                refreshIndicator.classList.remove('active');
+            }
+        }
+
+        // Start the countdown timer
+        function startCountdown() {
+            // Align to next minute boundary
+            countdownValue = getSecondsUntilNextMinute();
+            updateCountdown();
+
+            countdownInterval = setInterval(() => {
+                countdownValue--;
+
+                if (countdownValue <= 0) {
+                    refreshPrices();
+                    countdownValue = 60;
+                }
+
+                updateCountdown();
+            }, 1000);
+        }
+
+        // Initialize
+        lastRefreshEl.textContent = formatLocalTime(new Date());
+        startCountdown();
+    })();
+    </script>
 </body>
 </html>
       `.trim();
@@ -623,6 +970,5 @@ export default {
         headers: { 'Content-Type': 'text/plain' }
       });
     }
-  }
-};
+}
 
