@@ -375,16 +375,21 @@ async function handleMainPage(request, env, ctx) {
 
           headers.forEach((header, colIndex) => {
             // Add special class for Daily Change and Contribution columns to color them
-            let tdClass = '';
+            let tdClasses = [];
             let tdDataAttr = '';
             let cellValue = row[header];
+
+            // Add col-text class for text columns (Date, CUSIP, Ticker, Description)
+            if (['Date', 'CUSIP', 'Ticker', 'Description'].includes(header)) {
+              tdClasses.push('col-text');
+            }
 
             if ((header === 'Daily Change' || header === 'Contribution') && cellValue && cellValue !== 'N/A') {
               const numericValue = parseFloat(cellValue.replace('%', ''));
               if (numericValue > 0) {
-                tdClass = 'positive-change';
+                tdClasses.push('positive-change');
               } else if (numericValue < 0) {
-                tdClass = 'negative-change';
+                tdClasses.push('negative-change');
               }
             }
 
@@ -401,7 +406,8 @@ async function handleMainPage(request, env, ctx) {
               cellValue = `<a href="${barchartUrl}" target="_blank" class="ticker-link">${cellValue}</a>`;
             }
 
-            html += `<td${tdClass ? ` class="${tdClass}"` : ''}${tdDataAttr}>${cellValue}</td>\n`;
+            const classAttr = tdClasses.length > 0 ? ` class="${tdClasses.join(' ')}"` : '';
+            html += `<td${classAttr}${tdDataAttr}>${cellValue}</td>\n`;
           });
 
           html += '</tr>\n';
@@ -415,7 +421,9 @@ async function handleMainPage(request, env, ctx) {
                               totalContribution < 0 ? 'negative-change' : '';
             html += `<td class="${totalClass}" data-col="total-contribution">${formatChangePercent(totalContribution * 100)}</td>\n`;
           } else if (index === 0) {
-            html += `<td><strong>TOTAL</strong></td>\n`;
+            html += `<td class="col-text"><strong>TOTAL</strong></td>\n`;
+          } else if (['Date', 'CUSIP', 'Ticker', 'Description'].includes(header)) {
+            html += `<td class="col-text"></td>\n`;
           } else {
             html += `<td></td>\n`;
           }
@@ -504,6 +512,10 @@ async function handleMainPage(request, env, ctx) {
         #holdings-table td {
             padding: 12px 15px;
             border-bottom: 1px solid #e0e0e0;
+        }
+        
+        /* Explicit dark text color for text columns to prevent browser theme overrides */
+        #holdings-table td.col-text {
             color: #333;
         }
         
