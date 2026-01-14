@@ -875,12 +875,14 @@ async function handleMainPage(request, env, ctx) {
 
                 if (data.prices) {
                     let totalContribution = 0;
+                    const rowsWithContribution = [];
 
-                    // Update each row
+                    // Update each row and collect contribution data
                     document.querySelectorAll('#holdings-table tbody tr[data-ticker]').forEach(row => {
                         const ticker = row.dataset.ticker;
                         const holdings = parseFloat(row.dataset.holdings);
                         const priceData = data.prices[ticker];
+                        let contribution = 0;
 
                         if (priceData) {
                             // Update Daily Change cell
@@ -897,7 +899,7 @@ async function handleMainPage(request, env, ctx) {
                             // Update Contribution cell
                             const contribCell = row.querySelector('td[data-col="contribution"]');
                             if (contribCell && priceData.numeric !== null) {
-                                const contribution = holdings * (priceData.numeric / 100);
+                                contribution = holdings * (priceData.numeric / 100);
                                 totalContribution += contribution;
                                 contribCell.textContent = formatChangePercent(contribution * 100);
                                 updateCellStyle(contribCell, contribution);
@@ -906,6 +908,18 @@ async function handleMainPage(request, env, ctx) {
                                 contribCell.classList.remove('positive-change', 'negative-change', 'neutral-change');
                             }
                         }
+
+                        rowsWithContribution.push({ row, contribution });
+                    });
+
+                    // Sort rows by contribution (descending)
+                    rowsWithContribution.sort((a, b) => b.contribution - a.contribution);
+
+                    // Reorder rows in the DOM
+                    const tbody = document.querySelector('#holdings-table tbody');
+                    const totalRow = tbody.querySelector('.total-row');
+                    rowsWithContribution.forEach(item => {
+                        tbody.insertBefore(item.row, totalRow);
                     });
 
                     // Update total contribution
