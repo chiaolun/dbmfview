@@ -492,6 +492,7 @@ async function handleMainPage(request, env, ctx) {
         #holdings-table {
             width: 100%;
             border-collapse: collapse;
+            border-spacing: 0;
             font-size: 14px;
         }
         
@@ -539,14 +540,12 @@ async function handleMainPage(request, env, ctx) {
             background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
             color: #2e7d32;
             font-weight: 600;
-            box-shadow: inset 0 0 0 1px rgba(76, 175, 80, 0.2);
         }
         
         .negative-holding td:nth-child(5) {
             background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
             color: #c62828;
             font-weight: 600;
-            box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.2);
         }
         
         /* Color coding for Daily Change column */
@@ -554,14 +553,12 @@ async function handleMainPage(request, env, ctx) {
             background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
             color: #2e7d32;
             font-weight: 600;
-            box-shadow: inset 0 0 0 1px rgba(76, 175, 80, 0.2);
         }
         
         .negative-change {
             background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
             color: #c62828;
             font-weight: 600;
-            box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.2);
         }
         
         #holdings-table tr:hover {
@@ -571,22 +568,18 @@ async function handleMainPage(request, env, ctx) {
         
         .positive-holding:hover td:nth-child(5) {
             background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 100%);
-            box-shadow: inset 0 0 0 1px rgba(76, 175, 80, 0.3);
         }
         
         .negative-holding:hover td:nth-child(5) {
             background: linear-gradient(135deg, #ffcdd2 0%, #ef9a9a 100%);
-            box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.3);
         }
         
         #holdings-table tr:hover .positive-change {
             background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 100%);
-            box-shadow: inset 0 0 0 1px rgba(76, 175, 80, 0.3);
         }
         
         #holdings-table tr:hover .negative-change {
             background: linear-gradient(135deg, #ffcdd2 0%, #ef9a9a 100%);
-            box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.3);
         }
         
         #holdings-table tr:nth-child(even) {
