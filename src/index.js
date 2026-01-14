@@ -390,6 +390,8 @@ async function handleMainPage(request, env, ctx) {
                 tdClasses.push('positive-change');
               } else if (numericValue < 0) {
                 tdClasses.push('negative-change');
+              } else {
+                tdClasses.push('neutral-change');
               }
             }
 
@@ -418,7 +420,7 @@ async function handleMainPage(request, env, ctx) {
         headers.forEach((header, index) => {
           if (header === 'Contribution') {
             const totalClass = totalContribution > 0 ? 'positive-change' :
-                              totalContribution < 0 ? 'negative-change' : '';
+                              totalContribution < 0 ? 'negative-change' : 'neutral-change';
             html += `<td class="${totalClass}" data-col="total-contribution">${formatChangePercent(totalContribution * 100)}</td>\n`;
           } else if (index === 0) {
             html += `<td class="col-text"><strong>TOTAL</strong></td>\n`;
@@ -561,6 +563,12 @@ async function handleMainPage(request, env, ctx) {
             font-weight: 600;
         }
         
+        .neutral-change {
+            background: linear-gradient(135deg, #f5f5f5 0%, #eeeeee 100%);
+            color: #666;
+            font-weight: 600;
+        }
+        
         #holdings-table tr:hover {
             background-color: #f5f5f5;
             transition: background-color 0.2s ease;
@@ -580,6 +588,10 @@ async function handleMainPage(request, env, ctx) {
         
         #holdings-table tr:hover .negative-change {
             background: linear-gradient(135deg, #ffcdd2 0%, #ef9a9a 100%);
+        }
+        
+        #holdings-table tr:hover .neutral-change {
+            background: linear-gradient(135deg, #eeeeee 0%, #e0e0e0 100%);
         }
         
         #holdings-table tr:nth-child(even) {
@@ -841,11 +853,13 @@ async function handleMainPage(request, env, ctx) {
 
         // Update cell styling based on value
         function updateCellStyle(cell, value) {
-            cell.classList.remove('positive-change', 'negative-change');
+            cell.classList.remove('positive-change', 'negative-change', 'neutral-change');
             if (value > 0) {
                 cell.classList.add('positive-change');
             } else if (value < 0) {
                 cell.classList.add('negative-change');
+            } else {
+                cell.classList.add('neutral-change');
             }
         }
 
@@ -876,7 +890,7 @@ async function handleMainPage(request, env, ctx) {
                                 if (priceData.numeric !== null) {
                                     updateCellStyle(changeCell, priceData.numeric);
                                 } else {
-                                    changeCell.classList.remove('positive-change', 'negative-change');
+                                    changeCell.classList.remove('positive-change', 'negative-change', 'neutral-change');
                                 }
                             }
 
@@ -889,7 +903,7 @@ async function handleMainPage(request, env, ctx) {
                                 updateCellStyle(contribCell, contribution);
                             } else if (contribCell) {
                                 contribCell.textContent = 'N/A';
-                                contribCell.classList.remove('positive-change', 'negative-change');
+                                contribCell.classList.remove('positive-change', 'negative-change', 'neutral-change');
                             }
                         }
                     });
