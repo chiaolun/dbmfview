@@ -607,12 +607,26 @@ async function handleMainPage(request, env, ctx) {
         }
         
         .footer {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
             background: #f8f9fa;
-            padding: 20px 30px;
-            text-align: center;
+            padding: 14px 30px;
             color: #666;
-            font-size: 14px;
+            font-size: 13px;
             border-top: 1px solid #e0e0e0;
+        }
+        
+        .footer-item {
+            white-space: nowrap;
+        }
+        
+        .footer-divider {
+            width: 1px;
+            height: 16px;
+            background: #ccc;
         }
         
         .footer a {
@@ -635,50 +649,28 @@ async function handleMainPage(request, env, ctx) {
             text-decoration: underline;
             color: #764ba2;
         }
-        
-        .timestamp {
-            margin-top: 10px;
-            font-size: 12px;
-            opacity: 0.8;
-        }
-
-        .refresh-status {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 15px;
-            margin-top: 10px;
-            flex-wrap: wrap;
-        }
 
         .countdown {
             display: inline-flex;
             align-items: center;
-            gap: 6px;
+            gap: 4px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 6px 12px;
-            border-radius: 20px;
+            padding: 4px 10px;
+            border-radius: 12px;
             font-size: 12px;
             font-weight: 600;
         }
 
         .countdown-number {
-            background: rgba(255, 255, 255, 0.2);
-            padding: 2px 8px;
-            border-radius: 10px;
-            min-width: 24px;
-            text-align: center;
             font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            min-width: 18px;
+            text-align: center;
         }
 
         .refresh-indicator {
             display: none;
             align-items: center;
-            gap: 6px;
-            color: #667eea;
-            font-size: 12px;
-            font-weight: 600;
         }
 
         .refresh-indicator.active {
@@ -696,11 +688,6 @@ async function handleMainPage(request, env, ctx) {
 
         @keyframes spin {
             to { transform: rotate(360deg); }
-        }
-
-        .last-refresh {
-            font-size: 11px;
-            color: #888;
         }
 
         @media (max-width: 768px) {
@@ -766,24 +753,17 @@ async function handleMainPage(request, env, ctx) {
             }
             
             .footer {
-                padding: 8px;
-                font-size: 9px;
-            }
-
-            .footer .timestamp {
-                font-size: 7px;
-            }
-
-            .refresh-status {
+                padding: 10px 8px;
+                font-size: 10px;
                 gap: 8px;
+            }
+            
+            .footer-divider {
+                height: 12px;
             }
 
             .countdown {
-                padding: 4px 8px;
-                font-size: 10px;
-            }
-
-            .last-refresh {
+                padding: 3px 6px;
                 font-size: 9px;
             }
 
@@ -803,23 +783,19 @@ async function handleMainPage(request, env, ctx) {
             ${htmlTable}
         </div>
         <div class="footer">
-            <p>Data source: <a href="${EXCEL_URL}" target="_blank">DBMF-Holdings.xlsx</a></p>
-            <p class="timestamp">Asset weights updated: ${new Date().toUTCString()}</p>
-            <div class="refresh-status">
-                <div class="countdown">
-                    <span>Next price refresh in</span>
-                    <span class="countdown-number" id="countdown">60</span>
-                    <span>s</span>
-                </div>
-                <div class="refresh-indicator" id="refresh-indicator">
-                    <div class="spinner"></div>
-                    <span>Refreshing prices...</span>
-                </div>
-                <div class="last-refresh">
-                    <span>Prices last refreshed: </span>
-                    <span id="last-refresh-time">--</span>
-                </div>
+            <span class="footer-item">Source: <a href="${EXCEL_URL}" target="_blank">DBMF-Holdings.xlsx</a></span>
+            <span class="footer-divider"></span>
+            <span class="footer-item">Updated: ${new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
+            <span class="footer-divider"></span>
+            <div class="countdown">
+                <span class="countdown-number" id="countdown">60</span>
+                <span>s</span>
             </div>
+            <div class="refresh-indicator" id="refresh-indicator">
+                <div class="spinner"></div>
+            </div>
+            <span class="footer-divider"></span>
+            <span class="footer-item" id="last-refresh-time">--</span>
         </div>
     </div>
     <script>
@@ -926,7 +902,7 @@ async function handleMainPage(request, env, ctx) {
                     }
 
                     // Update last refresh time in viewer's timezone
-                    lastRefreshEl.textContent = formatLocalTime(new Date());
+                    lastRefreshEl.textContent = 'Last: ' + formatLocalTime(new Date());
                 }
             } catch (error) {
                 console.error('Error refreshing prices:', error);
@@ -954,7 +930,7 @@ async function handleMainPage(request, env, ctx) {
         }
 
         // Initialize
-        lastRefreshEl.textContent = formatLocalTime(new Date());
+        lastRefreshEl.textContent = 'Last: ' + formatLocalTime(new Date());
         startCountdown();
     })();
     </script>
