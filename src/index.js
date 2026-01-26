@@ -817,8 +817,7 @@ async function handleMainPage(request, env, ctx) {
             .map(row => row.dataset.ticker)
             .filter(t => t);
 
-        let countdownValue = 60;
-        let countdownInterval;
+        let lastRefreshMinute = new Date().getMinutes();
 
         const countdownEl = document.getElementById('countdown');
         const refreshIndicator = document.getElementById('refresh-indicator');
@@ -831,17 +830,6 @@ async function handleMainPage(request, env, ctx) {
                 minute: '2-digit',
                 second: '2-digit'
             });
-        }
-
-        // Update the countdown display
-        function updateCountdown() {
-            countdownEl.textContent = countdownValue;
-        }
-
-        // Calculate seconds until next minute boundary
-        function getSecondsUntilNextMinute() {
-            const now = new Date();
-            return 60 - now.getSeconds();
         }
 
         // Format percentage with sign
@@ -939,27 +927,34 @@ async function handleMainPage(request, env, ctx) {
             }
         }
 
-        // Start the countdown timer
-        function startCountdown() {
-            // Align to next minute boundary
-            countdownValue = getSecondsUntilNextMinute();
-            updateCountdown();
+        // Check if refresh is needed and update countdown display
+        function checkAndRefresh() {
+            const now = new Date();
+            const currentMinute = now.getMinutes();
 
-            countdownInterval = setInterval(() => {
-                countdownValue--;
+            // If we're in a new minute, refresh
+            if (currentMinute !== lastRefreshMinute) {
+                refreshPrices();
+                lastRefreshMinute = currentMinute;
+            }
 
-                if (countdownValue <= 0) {
-                    refreshPrices();
-                    countdownValue = 60;
-                }
-
-                updateCountdown();
-            }, 1000);
+            // Countdown is always derived from actual time - never drifts
+            countdownEl.textContent = 60 - now.getSeconds();
         }
+
+        // Check every second
+        setInterval(checkAndRefresh, 1000);
+
+        // Also check immediately when tab becomes visible
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                checkAndRefresh();
+            }
+        });
 
         // Initialize
         lastRefreshEl.textContent = 'Last: ' + formatLocalTime(new Date());
-        startCountdown();
+        checkAndRefresh();
     })();
     </script>
 </body>
