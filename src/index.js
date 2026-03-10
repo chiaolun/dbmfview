@@ -129,44 +129,171 @@ async function fetchBarchartPriceForAPI(root) {
   }
 }
 
+function errorPage(message) {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DBMF Holdings - Error</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            margin: 0;
+        }
+        .error-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            text-align: center;
+        }
+        h1 { color: #c62828; margin-bottom: 16px; }
+        .message {
+            color: #333;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            text-align: left;
+            background: #f5f5f5;
+            padding: 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            overflow-x: auto;
+        }
+        .retry { margin-top: 24px; }
+        .retry a {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .source-link {
+            margin-top: 16px;
+            font-size: 13px;
+            color: #666;
+        }
+        .source-link a { color: #667eea; }
+    </style>
+</head>
+<body>
+    <div class="error-card">
+        <h1>Unable to Load Holdings</h1>
+        <div class="message">${message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+        <div class="retry"><a href="/">Retry</a></div>
+        <div class="source-link">Source: <a href="${EXCEL_URL}" target="_blank">DBMF-Holdings.xlsx</a></div>
+    </div>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 502,
+    headers: {
+      'Content-Type': 'text/html;charset=UTF-8',
+      'Cache-Control': 'no-cache',
+    }
+  });
+}
+
 async function handleMainPage(request, env, ctx) {
     try {
       // Fetch the Excel file
       const response = await fetch(EXCEL_URL);
-      
+
       if (!response.ok) {
-        return new Response(`Failed to fetch Excel file: ${response.status} ${response.statusText}`, {
-          status: 500,
-          headers: { 'Content-Type': 'text/plain' }
-        });
+        return errorPage(`Failed to fetch Excel file: HTTP ${response.status} ${response.statusText}`);
       }
 
       // Get the file as ArrayBuffer
       const arrayBuffer = await response.arrayBuffer();
-      
+
+      // Validate the response is actually an XLSX file (ZIP format starts with PK = 0x504B)
+      if (arrayBuffer.byteLength < 4) {
+        return errorPage('Excel file is empty or too small to be valid.');
+      }
+
+      const header = new Uint8Array(arrayBuffer.slice(0, 4));
+      if (header[0] !== 0x50 || header[1] !== 0x4B) {
+        // Not a ZIP/XLSX file - likely an HTML error page or redirect
+        const contentType = response.headers.get('content-type') || 'unknown';
+        const preview = new TextDecoder().decode(arrayBuffer.slice(0, 200));
+        return errorPage(
+          `Expected XLSX file but received ${contentType}. ` +
+          `The upstream server may be returning an error page. ` +
+          `Content preview: ${preview.slice(0, 100)}...`
+        );
+      }
+
       // Parse the Excel file
-      const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+      let workbook;
+      try {
+        workbook = XLSX.read(new Uint8Array(arrayBuffer), { type: 'array' });
+      } catch (parseError) {
+        return errorPage(`Excel file is corrupted and cannot be parsed: ${parseError.message}`);
+      }
       
       // Get the first sheet
       const firstSheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[firstSheetName];
-      
-      // Based on the actual file structure:
-      // Row 0: Title
-      // Row 1: Empty
-      // Row 2-3: Fund info (NAV, SHARES_OUTSTANDING, etc.)
-      // Row 4: Empty
-      // Row 5: Table headers (DATE, CUSIP, TICKER, DESCRIPTION, SHARES, BASE_MV, PCT_HOLDINGS)
-      // Row 6+: Holdings data
-      
-      // Parse starting from row 5 (0-indexed)
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { range: 5 });
-      
+
+      if (!worksheet) {
+        return errorPage('Excel file has no worksheets.');
+      }
+
+      // Detect the header row dynamically by scanning for the TICKER column
+      const allRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+      let headerRowIndex = -1;
+
+      for (let i = 0; i < Math.min(allRows.length, 20); i++) {
+        const row = allRows[i];
+        if (Array.isArray(row) && row.some(cell => String(cell).trim() === 'TICKER')) {
+          headerRowIndex = i;
+          break;
+        }
+      }
+
+      if (headerRowIndex === -1) {
+        const preview = allRows.slice(0, 10).map((r, i) => `Row ${i}: ${JSON.stringify(r)}`).join('\n');
+        return errorPage(
+          `Could not find expected column headers (TICKER) in the Excel file. ` +
+          `The file structure may have changed.\n\nFirst 10 rows:\n${preview}`
+        );
+      }
+
+      // Parse starting from the detected header row
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { range: headerRowIndex });
+
+      // Validate expected columns exist
+      const requiredColumns = ['TICKER', 'PCT_HOLDINGS'];
+      if (jsonData.length > 0) {
+        const columns = Object.keys(jsonData[0]);
+        const missing = requiredColumns.filter(col => !columns.includes(col));
+        if (missing.length > 0) {
+          return errorPage(
+            `Excel file is missing expected columns: ${missing.join(', ')}. ` +
+            `Available columns: ${columns.join(', ')}`
+          );
+        }
+      }
+
       // Filter to only include rows with a ticker (TICKER column is not empty)
       const filteredData = jsonData.filter(row => {
         const ticker = row['TICKER'];
         return ticker && String(ticker).trim() !== '';
       });
+
+      if (filteredData.length === 0) {
+        return errorPage('Excel file was parsed successfully but contains no rows with a TICKER value.');
+      }
       
       // Fetch prices for all tickers
       const tickers = filteredData.map(row => row['TICKER']);
@@ -970,10 +1097,7 @@ async function handleMainPage(request, env, ctx) {
       
     } catch (error) {
       console.error('Error:', error);
-      return new Response(`Error processing Excel file: ${error.message}`, {
-        status: 500,
-        headers: { 'Content-Type': 'text/plain' }
-      });
+      return errorPage(`Unexpected error processing Excel file: ${error.message}`);
     }
 }
 
