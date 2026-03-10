@@ -1,6 +1,4 @@
-import * as XLSX from 'xlsx';
-
-const EXCEL_URL = 'https://imgpfunds.com/wp-content/uploads/pdfs/holdings/DBMF-Holdings.xlsx';
+const HOLDINGS_URL = 'https://www.imgp.com/us/fund/US53700T8273/';
 
 // Symbol mapping from DBMF tickers to Barchart root symbols
 const BARCHART_SYMBOL_MAP = {
@@ -15,6 +13,43 @@ const BARCHART_SYMBOL_MAP = {
   'TY': 'ZN',   // 10-Year Treasury Note
   'TU': 'ZT',   // 2-Year Treasury Note (US 2YR NOTE CBT)
 };
+
+// Parse holdings data from the iMGP fund HTML page
+function parseHoldingsFromHTML(html) {
+  const rows = [];
+  // Match each <tr class="holding row"> in the holdings table body
+  const tableMatch = html.match(/<table[^>]*id="breakdown-holdings-us"[^>]*>([\s\S]*?)<\/table>/);
+  if (!tableMatch) return rows;
+
+  const tbodyMatch = tableMatch[1].match(/<tbody>([\s\S]*?)<\/tbody>/);
+  if (!tbodyMatch) return rows;
+
+  const rowRegex = /<tr class="holding row">([\s\S]*?)<\/tr>/g;
+  let match;
+  while ((match = rowRegex.exec(tbodyMatch[1])) !== null) {
+    const cells = match[1];
+    const getValue = (cls) => {
+      const m = cells.match(new RegExp(`<td class="${cls}">(.*?)<\\/td>`, 's'));
+      return m ? m[1].trim() : '';
+    };
+
+    const ticker = getValue('ticker');
+    const securityName = getValue('security_name');
+    const weight = parseFloat(getValue('weight'));
+
+    // Skip rows without a real ticker and the TOTAL NET ASSETS row
+    if (!ticker || ticker === '-' || securityName === 'TOTAL NET ASSETS') continue;
+
+    rows.push({
+      'DATE': getValue('value_date'),
+      'TICKER': ticker,
+      'DESCRIPTION': securityName,
+      'WEIGHT': weight,
+    });
+  }
+
+  return rows;
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -131,50 +166,28 @@ async function fetchBarchartPriceForAPI(root) {
 
 async function handleMainPage(request, env, ctx) {
     try {
-      // Fetch the Excel file
-      const response = await fetch(EXCEL_URL);
-      
+      // Fetch the holdings page
+      const response = await fetch(HOLDINGS_URL);
+
       if (!response.ok) {
-        return new Response(`Failed to fetch Excel file: ${response.status} ${response.statusText}`, {
+        return new Response(`Failed to fetch holdings page: ${response.status} ${response.statusText}`, {
           status: 500,
           headers: { 'Content-Type': 'text/plain' }
         });
       }
 
-      // Get the file as ArrayBuffer
-      const arrayBuffer = await response.arrayBuffer();
-      
-      // Parse the Excel file
-      const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-      
-      // Get the first sheet
-      const firstSheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[firstSheetName];
-      
-      // Based on the actual file structure:
-      // Row 0: Title
-      // Row 1: Empty
-      // Row 2-3: Fund info (NAV, SHARES_OUTSTANDING, etc.)
-      // Row 4: Empty
-      // Row 5: Table headers (DATE, CUSIP, TICKER, DESCRIPTION, SHARES, BASE_MV, PCT_HOLDINGS)
-      // Row 6+: Holdings data
-      
-      // Parse starting from row 5 (0-indexed)
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { range: 5 });
-      
-      // Filter to only include rows with a ticker (TICKER column is not empty)
-      const filteredData = jsonData.filter(row => {
-        const ticker = row['TICKER'];
-        return ticker && String(ticker).trim() !== '';
-      });
+      const pageHTML = await response.text();
+
+      // Parse holdings from the HTML table
+      const filteredData = parseHoldingsFromHTML(pageHTML);
       
       // Fetch prices for all tickers
       const tickers = filteredData.map(row => row['TICKER']);
       const prices = await fetchTickerPrices(tickers);
-      
+
       // Calculate contributions and prepare data for sorting
       const dataWithContributions = filteredData.map((row, index) => {
-        const holdingsPct = row['PCT_HOLDINGS'];
+        const holdingsPct = row['WEIGHT'];
         const dailyChangeStr = prices[row['TICKER']];
         let dailyChangePct = 0;
         let contribution = 0;
@@ -200,11 +213,10 @@ async function handleMainPage(request, env, ctx) {
       const formattedData = dataWithContributions.map(item => {
         const row = item.original;
         return {
-          'Date': formatDate(row['DATE']),
-          'CUSIP': row['CUSIP'] || '',
+          'Date': row['DATE'] || '',
           'Ticker': row['TICKER'] || '',
           'Description': row['DESCRIPTION'] || '',
-          'Holdings %': formatPercent(row['PCT_HOLDINGS']),
+          'Holdings %': formatPercent(row['WEIGHT']),
           'Daily Change': item.dailyChangeStr || 'N/A',
           'Contribution': item.dailyChangeStr !== 'N/A' ? formatChangePercent(item.contribution * 100) : 'N/A'
         };
@@ -296,16 +308,6 @@ async function handleMainPage(request, env, ctx) {
       }
       
       // Helper functions for formatting
-      function formatDate(dateNum) {
-        if (!dateNum) return '';
-        const dateStr = String(dateNum);
-        // Format: YYYYMMDD -> YYYY-MM-DD
-        if (dateStr.length === 8) {
-          return `${dateStr.slice(0,4)}-${dateStr.slice(4,6)}-${dateStr.slice(6,8)}`;
-        }
-        return dateStr;
-      }
-      
       function formatNumber(num) {
         if (num === null || num === undefined || num === '') return '';
         return new Intl.NumberFormat('en-US').format(num);
@@ -365,7 +367,7 @@ async function handleMainPage(request, env, ctx) {
         
         // Add data rows
         formattedRows.forEach((row, index) => {
-          const originalPercent = dataRows[index].original['PCT_HOLDINGS'];
+          const originalPercent = dataRows[index].original['WEIGHT'];
           const ticker = row['Ticker'];
           const rowClass = originalPercent > 0 ? 'positive-holding' :
                           originalPercent < 0 ? 'negative-holding' : '';
@@ -380,7 +382,7 @@ async function handleMainPage(request, env, ctx) {
             let cellValue = row[header];
 
             // Add col-text class for text columns (Date, CUSIP, Ticker, Description)
-            if (['Date', 'CUSIP', 'Ticker', 'Description'].includes(header)) {
+            if (['Date', 'Ticker', 'Description'].includes(header)) {
               tdClasses.push('col-text');
             }
 
@@ -424,7 +426,7 @@ async function handleMainPage(request, env, ctx) {
             html += `<td class="${totalClass}" data-col="total-contribution">${formatChangePercent(totalContribution * 100)}</td>\n`;
           } else if (index === 0) {
             html += `<td class="col-text"><strong>TOTAL</strong></td>\n`;
-          } else if (['Date', 'CUSIP', 'Ticker', 'Description'].includes(header)) {
+          } else if (['Date', 'Ticker', 'Description'].includes(header)) {
             html += `<td class="col-text"></td>\n`;
           } else {
             html += `<td></td>\n`;
@@ -523,28 +525,28 @@ async function handleMainPage(request, env, ctx) {
         }
         
         /* Right-align numeric columns */
-        #holdings-table td:nth-child(5),  /* Holdings % */
-        #holdings-table td:nth-child(6),  /* Daily Change */
-        #holdings-table td:nth-child(7) { /* Contribution */
+        #holdings-table td:nth-child(4),  /* Holdings % */
+        #holdings-table td:nth-child(5),  /* Daily Change */
+        #holdings-table td:nth-child(6) { /* Contribution */
             text-align: right;
             font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
         }
-        
+
         /* Right-align headers for numeric columns */
+        #holdings-table th:nth-child(4),
         #holdings-table th:nth-child(5),
-        #holdings-table th:nth-child(6),
-        #holdings-table th:nth-child(7) {
+        #holdings-table th:nth-child(6) {
             text-align: right;
         }
-        
+
         /* Color coding for Holdings % column */
-        .positive-holding td:nth-child(5) {
+        .positive-holding td:nth-child(4) {
             background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
             color: #2e7d32;
             font-weight: 600;
         }
         
-        .negative-holding td:nth-child(5) {
+        .negative-holding td:nth-child(4) {
             background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
             color: #c62828;
             font-weight: 600;
@@ -574,11 +576,11 @@ async function handleMainPage(request, env, ctx) {
             transition: background-color 0.2s ease;
         }
         
-        .positive-holding:hover td:nth-child(5) {
+        .positive-holding:hover td:nth-child(4) {
             background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 100%);
         }
         
-        .negative-holding:hover td:nth-child(5) {
+        .negative-holding:hover td:nth-child(4) {
             background: linear-gradient(135deg, #ffcdd2 0%, #ef9a9a 100%);
         }
         
@@ -744,20 +746,19 @@ async function handleMainPage(request, env, ctx) {
                 padding: 3px 2px;
             }
             
-            /* Make Date and CUSIP columns smaller */
-            #holdings-table td:nth-child(1),
-            #holdings-table td:nth-child(2) {
+            /* Make Date column smaller */
+            #holdings-table td:nth-child(1) {
                 font-size: 6px;
             }
-            
+
             /* Make ticker column slightly larger for readability */
-            #holdings-table td:nth-child(3) {
+            #holdings-table td:nth-child(2) {
                 font-size: 7px;
                 font-weight: 600;
             }
-            
+
             /* Make description column wrappable and limit width */
-            #holdings-table td:nth-child(4) {
+            #holdings-table td:nth-child(3) {
                 max-width: 60px;
                 white-space: normal;
                 font-size: 6px;
@@ -795,7 +796,7 @@ async function handleMainPage(request, env, ctx) {
             ${htmlTable}
         </div>
         <div class="footer">
-            <span class="footer-item">Source: <a href="${EXCEL_URL}" target="_blank">DBMF-Holdings.xlsx</a></span>
+            <span class="footer-item">Source: <a href="${HOLDINGS_URL}" target="_blank">iMGP Fund Page</a></span>
             <span class="footer-divider"></span>
             <span class="footer-item">Updated: ${new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
             <span class="footer-divider"></span>
@@ -970,7 +971,7 @@ async function handleMainPage(request, env, ctx) {
       
     } catch (error) {
       console.error('Error:', error);
-      return new Response(`Error processing Excel file: ${error.message}`, {
+      return new Response(`Error processing holdings data: ${error.message}`, {
         status: 500,
         headers: { 'Content-Type': 'text/plain' }
       });

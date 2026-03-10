@@ -1,7 +1,7 @@
 {
   "name": "dbmfview",
   "version": "1.0.0",
-  "description": "Cloudflare Worker to display DBMF Holdings Excel file as HTML",
+  "description": "Cloudflare Worker to display DBMF Holdings as HTML",
   "main": "src/index.js",
   "scripts": {
     "dev": "wrangler dev",
@@ -9,14 +9,10 @@
   },
   "keywords": [
     "cloudflare",
-    "worker",
-    "excel"
+    "worker"
   ],
   "author": "",
   "license": "MIT",
-  "dependencies": {
-    "xlsx": "^0.18.5"
-  },
   "devDependencies": {
     "wrangler": "^4.43.0"
   }
