@@ -3,6 +3,18 @@ account_id = "4cd27ec0d809eb3b7cfeefe0e36ed22d"
 main = "src/index.js"
 compatibility_date = "2023-12-01"
 
+# KV namespace for caching ETF holdings (fetched hourly via cron)
+# Create with: npx wrangler kv namespace create HOLDINGS_KV
+#              npx wrangler kv namespace create HOLDINGS_KV --preview
+[[kv_namespaces]]
+binding = "HOLDINGS_KV"
+id = "HOLDINGS_KV_NAMESPACE_ID"
+preview_id = "HOLDINGS_KV_PREVIEW_NAMESPACE_ID"
+
+# Fetch ETF holdings once per hour
+[triggers]
+crons = ["0 * * * *"]
+
 # Uncomment to use a custom route
 # routes = [
 #   { pattern = "example.com/*", zone_name = "example.com" }
