@@ -8,8 +8,7 @@ compatibility_date = "2023-12-01"
 #              npx wrangler kv namespace create HOLDINGS_KV --preview
 [[kv_namespaces]]
 binding = "HOLDINGS_KV"
-id = "HOLDINGS_KV_NAMESPACE_ID"
-preview_id = "HOLDINGS_KV_PREVIEW_NAMESPACE_ID"
+id = "0073f76ec24a4f97acf2088ab6612f01"
 
 # Fetch ETF holdings once per hour
 [triggers]
