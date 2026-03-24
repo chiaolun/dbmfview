@@ -51,6 +51,34 @@ function parseHoldingsFromHTML(html) {
   return rows;
 }
 
+// Fetch holdings from iMGP and store in KV
+async function fetchAndStoreHoldings(env) {
+  const response = await fetch(HOLDINGS_URL);
+  if (!response.ok) {
+    console.error(`Failed to fetch holdings: ${response.status}`);
+    return null;
+  }
+  const pageHTML = await response.text();
+  const holdings = parseHoldingsFromHTML(pageHTML);
+  if (holdings.length === 0) {
+    console.error('Parsed zero holdings from iMGP page — skipping KV update');
+    return null;
+  }
+  await env.HOLDINGS_KV.put('holdings', JSON.stringify(holdings), { expirationTtl: 7200 });
+  await env.HOLDINGS_KV.put('holdings_updated_at', new Date().toISOString(), { expirationTtl: 7200 });
+  return holdings;
+}
+
+// Read holdings from KV, falling back to a live fetch if KV is empty
+async function getHoldingsFromKV(env) {
+  const cached = await env.HOLDINGS_KV.get('holdings');
+  if (cached) {
+    return JSON.parse(cached);
+  }
+  // KV empty (first deploy or TTL expired) — fetch live and populate KV
+  return await fetchAndStoreHoldings(env);
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -62,6 +90,10 @@ export default {
 
     // Handle main page
     return handleMainPage(request, env, ctx);
+  },
+
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(fetchAndStoreHoldings(env));
   }
 };
 
@@ -166,20 +198,15 @@ async function fetchBarchartPriceForAPI(root) {
 
 async function handleMainPage(request, env, ctx) {
     try {
-      // Fetch the holdings page
-      const response = await fetch(HOLDINGS_URL);
+      // Read holdings from KV (populated hourly by cron)
+      const filteredData = await getHoldingsFromKV(env);
 
-      if (!response.ok) {
-        return new Response(`Failed to fetch holdings page: ${response.status} ${response.statusText}`, {
-          status: 500,
-          headers: { 'Content-Type': 'text/plain' }
+      if (!filteredData || filteredData.length === 0) {
+        return new Response('Holdings data not yet available. Please try again shortly.', {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain', 'Retry-After': '60' }
         });
       }
-
-      const pageHTML = await response.text();
-
-      // Parse holdings from the HTML table
-      const filteredData = parseHoldingsFromHTML(pageHTML);
       
       // Fetch prices for all tickers
       const tickers = filteredData.map(row => row['TICKER']);
@@ -227,6 +254,12 @@ async function handleMainPage(request, env, ctx) {
       
       // Build HTML table manually with color coding
       const htmlTable = buildColorCodedTable(formattedData, dataWithContributions, totalContribution);
+
+      // Get holdings refresh timestamp from KV for the footer
+      const holdingsUpdatedAt = await env.HOLDINGS_KV.get('holdings_updated_at');
+      const holdingsUpdatedLabel = holdingsUpdatedAt
+        ? new Date(holdingsUpdatedAt).toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' })
+        : new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
       
       // Function to fetch ticker prices from Yahoo Finance
       async function fetchTickerPrices(tickers) {
@@ -798,7 +831,7 @@ async function handleMainPage(request, env, ctx) {
         <div class="footer">
             <span class="footer-item">Source: <a href="${HOLDINGS_URL}" target="_blank">iMGP Fund Page</a></span>
             <span class="footer-divider"></span>
-            <span class="footer-item">Updated: ${new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
+            <span class="footer-item">Holdings: ${holdingsUpdatedLabel}</span>
             <span class="footer-divider"></span>
             <div class="countdown">
                 <span class="countdown-number" id="countdown">60</span>
