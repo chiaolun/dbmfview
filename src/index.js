@@ -60,6 +60,10 @@ async function fetchAndStoreHoldings(env) {
   }
   const pageHTML = await response.text();
   const holdings = parseHoldingsFromHTML(pageHTML);
+  if (holdings.length === 0) {
+    console.error('Parsed zero holdings from iMGP page — skipping KV update');
+    return null;
+  }
   await env.HOLDINGS_KV.put('holdings', JSON.stringify(holdings), { expirationTtl: 7200 });
   await env.HOLDINGS_KV.put('holdings_updated_at', new Date().toISOString(), { expirationTtl: 7200 });
   return holdings;
