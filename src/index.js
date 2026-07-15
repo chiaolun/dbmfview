@@ -1,3 +1,5 @@
+import PostalMime from 'postal-mime';
+
 const HOLDINGS_URL = 'https://www.imgp.com/us/fund/US53700T8273/';
 
 // Symbol mapping from DBMF tickers to Barchart root symbols
@@ -40,15 +42,186 @@ function parseHoldingsFromHTML(html) {
     // Skip rows without a real ticker and the TOTAL NET ASSETS row
     if (!ticker || ticker === '-' || securityName === 'TOTAL NET ASSETS') continue;
 
+    // Parse plain numbers like "-3,735,600,000" or "$  -3,846,646,537.54"
+    const parseNumber = (s) => {
+      const n = parseFloat(s.replace(/[$,\s]/g, ''));
+      return isNaN(n) ? null : n;
+    };
+
     rows.push({
       'DATE': getValue('value_date'),
       'TICKER': ticker,
       'DESCRIPTION': securityName,
+      'SHARES': parseNumber(getValue('shares_qty')),
+      'VALUE': parseNumber(getValue('market_value')),
       'WEIGHT': weight,
     });
   }
 
   return rows;
+}
+
+// Parse holdings from a dbmfwatch update email (HTML body).
+// The history table has per-contract rows like:
+//   CLU6 | WTI CRUDEFUTURE SEP26 | 3.1M | $242.3M | 6.0% | ...older dates...
+// The first shares/value/pct triple after the description is the current date.
+export function parseHoldingsFromEmail(html) {
+  const rows = [];
+  const seen = new Set();
+
+  // Report date appears as e.g. "DBMF | 2026-07-15"
+  const dateMatch = html.match(/DBMF\s*\|\s*(\d{4}-\d{2}-\d{2})/);
+  const date = dateMatch ? dateMatch[1] : '';
+
+  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+  const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/g;
+  let rowMatch;
+  while ((rowMatch = rowRegex.exec(html)) !== null) {
+    const cells = [];
+    let cellMatch;
+    cellRegex.lastIndex = 0;
+    while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
+      cells.push(
+        cellMatch[1]
+          .replace(/<[^>]*>/g, '')
+          .replace(/&amp;/g, '&')
+          .replace(/&nbsp;/g, ' ')
+          .trim()
+      );
+    }
+    if (cells.length < 5) continue;
+
+    // Per-contract tickers only (root + month code + year digit), e.g. CLU6, MESU6
+    const ticker = cells[0];
+    if (!/^[A-Z]{1,4}[FGHJKMNQUVXZ]\d$/.test(ticker) || seen.has(ticker)) continue;
+
+    // Current-date weight, e.g. "6.0%" or "-99.0%"; "-" means not currently held
+    const pctMatch = cells[4].match(/^(-?\d+(?:\.\d+)?)%$/);
+    if (!pctMatch) continue;
+
+    // Parse abbreviated numbers like "3.1M", "-3.7B", "$242.3M"
+    const parseAbbreviated = (s) => {
+      const m = s.replace(/[$,]/g, '').match(/^(-?\d+(?:\.\d+)?)([KMB])?$/i);
+      if (!m) return null;
+      const mult = { K: 1e3, M: 1e6, B: 1e9 }[(m[2] || '').toUpperCase()] || 1;
+      return parseFloat(m[1]) * mult;
+    };
+
+    seen.add(ticker);
+    rows.push({
+      'DATE': date,
+      'TICKER': ticker,
+      'DESCRIPTION': cells[1],
+      'SHARES': parseAbbreviated(cells[2]),
+      'VALUE': parseAbbreviated(cells[3]),
+      'WEIGHT': parseFloat(pctMatch[1]) / 100,
+    });
+  }
+
+  return { date, rows };
+}
+
+// Fetch the iMGP page, parse holdings, and store the result in KV.
+// Returns the stored payload, or null on failure.
+async function refreshIMGPHoldings(env) {
+  try {
+    const response = await fetch(HOLDINGS_URL);
+    if (!response.ok) {
+      console.error(`iMGP page fetch failed: ${response.status} ${response.statusText}`);
+      return null;
+    }
+    const rows = parseHoldingsFromHTML(await response.text());
+    if (rows.length === 0) {
+      console.error('iMGP page parsed to 0 holdings rows');
+      return null;
+    }
+    const payload = {
+      source: 'imgp',
+      date: rows[0]['DATE'] || '',
+      fetchedAt: new Date().toISOString(),
+      rows,
+    };
+    await env.DBMF_KV.put('imgp:latest', JSON.stringify(payload));
+    return payload;
+  } catch (e) {
+    console.error('Error refreshing iMGP holdings:', e);
+    return null;
+  }
+}
+
+// Normalize "MM/DD/YYYY" (iMGP) or "YYYY-MM-DD" (dbmfwatch) to ISO
+function normalizeDate(dateStr) {
+  if (!dateStr) return '';
+  const us = dateStr.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (us) return `${us[3]}-${us[1]}-${us[2]}`;
+  return dateStr;
+}
+
+// Cross-check the two sources: ticker sets, weights (absolute tolerance,
+// dbmfwatch rounds to 0.1pp) and shares (relative tolerance, dbmfwatch
+// abbreviates to ~2 significant figures)
+function compareSources(imgp, dbmfwatch, weightTolerance, sharesTolerance) {
+  const imgpMap = new Map(imgp.rows.map(r => [r.TICKER, r]));
+  const dwMap = new Map(dbmfwatch.rows.map(r => [r.TICKER, r]));
+
+  const onlyInImgp = [...imgpMap.keys()].filter(t => !dwMap.has(t));
+  const onlyInDbmfwatch = [...dwMap.keys()].filter(t => !imgpMap.has(t));
+
+  const diffs = [];
+  for (const [ticker, a] of imgpMap) {
+    const b = dwMap.get(ticker);
+    if (!b) continue;
+
+    const weightDiff = a.WEIGHT - b.WEIGHT;
+    const weightOk = Math.abs(weightDiff) <= weightTolerance;
+
+    let sharesRelDiff = null;
+    let sharesOk = null;
+    if (a.SHARES != null && b.SHARES != null) {
+      const denom = Math.max(Math.abs(a.SHARES), Math.abs(b.SHARES));
+      sharesRelDiff = denom === 0 ? 0 : Math.abs(a.SHARES - b.SHARES) / denom;
+      sharesRelDiff = Math.round(sharesRelDiff * 1e6) / 1e6;
+      sharesOk = sharesRelDiff <= sharesTolerance;
+    }
+
+    diffs.push({
+      ticker,
+      imgpWeight: a.WEIGHT,
+      dbmfwatchWeight: b.WEIGHT,
+      weightDiff: Math.round(weightDiff * 1e6) / 1e6,
+      weightOk,
+      imgpShares: a.SHARES,
+      dbmfwatchShares: b.SHARES,
+      sharesRelDiff,
+      sharesOk,
+    });
+  }
+
+  const imgpDate = normalizeDate(imgp.date);
+  const dbmfwatchDate = normalizeDate(dbmfwatch.date);
+  return {
+    ok: onlyInImgp.length === 0 && onlyInDbmfwatch.length === 0 &&
+        diffs.every(d => d.weightOk && d.sharesOk !== false),
+    imgpDate,
+    dbmfwatchDate,
+    sameDate: imgpDate === dbmfwatchDate,
+    weightTolerance,
+    sharesTolerance,
+    onlyInImgp,
+    onlyInDbmfwatch,
+    diffs,
+  };
+}
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+      'Access-Control-Allow-Origin': '*'
+    }
+  });
 }
 
 export default {
@@ -60,8 +233,70 @@ export default {
       return handlePriceUpdate(request, env, ctx);
     }
 
+    // Both holdings parses (iMGP page + dbmfwatch email) and their consistency
+    if (url.pathname === '/api/holdings') {
+      const weightTolerance = parseFloat(url.searchParams.get('wtol')) || 0.002;
+      const sharesTolerance = parseFloat(url.searchParams.get('stol')) || 0.02;
+      let imgp = await env.DBMF_KV.get('imgp:latest', 'json');
+      if (!imgp) imgp = await refreshIMGPHoldings(env);
+      const dbmfwatch = await env.DBMF_KV.get('dbmfwatch:latest', 'json');
+      const comparison = imgp && dbmfwatch
+        ? compareSources(imgp, dbmfwatch, weightTolerance, sharesTolerance)
+        : null;
+      return jsonResponse({
+        consistent: comparison ? comparison.ok : null,
+        imgp,
+        dbmfwatch,
+        comparison,
+      }, imgp || dbmfwatch ? 200 : 404);
+    }
+
     // Handle main page
     return handleMainPage(request, env, ctx);
+  },
+
+  // Cron: refresh the iMGP holdings snapshot in KV
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(refreshIMGPHoldings(env));
+  },
+
+  // Receives mail forwarded from Gmail via Email Routing (dbmf@thechiao.com)
+  async email(message, env, ctx) {
+    const raw = await new Response(message.raw).arrayBuffer();
+    const parsed = await PostalMime.parse(raw);
+    const subject = parsed.subject || message.headers.get('subject') || '';
+
+    // Keep the most recent email around for debugging and for the Gmail
+    // forwarding-verification code
+    await env.DBMF_KV.put('inbox:last', JSON.stringify({
+      from: message.from,
+      subject,
+      receivedAt: new Date().toISOString(),
+      text: (parsed.text || '').slice(0, 20000),
+    }));
+
+    if (!/DBMF update/i.test(subject) || !parsed.html) return;
+
+    const { date, rows } = parseHoldingsFromEmail(parsed.html);
+    if (rows.length === 0) {
+      console.error(`dbmfwatch email "${subject}" parsed to 0 holdings rows`);
+      return;
+    }
+
+    const payload = JSON.stringify({
+      source: 'dbmfwatch',
+      date,
+      receivedAt: new Date().toISOString(),
+      rows,
+    });
+    if (date) {
+      await env.DBMF_KV.put(`dbmfwatch:${date}`, payload);
+    }
+    // Only advance "latest" — an old email forwarded later must not regress it
+    const existing = await env.DBMF_KV.get('dbmfwatch:latest', 'json');
+    if (!existing || !existing.date || (date && date >= existing.date)) {
+      await env.DBMF_KV.put('dbmfwatch:latest', payload);
+    }
   }
 };
 
@@ -166,21 +401,36 @@ async function fetchBarchartPriceForAPI(root) {
 
 async function handleMainPage(request, env, ctx) {
     try {
-      // Fetch the holdings page
-      const response = await fetch(HOLDINGS_URL);
+      // Primary source: cron-refreshed iMGP snapshot (self-seeds on first load)
+      let filteredData = [];
+      let sourceLabel = 'iMGP Fund Page';
+      let sourceUrl = HOLDINGS_URL;
 
-      if (!response.ok) {
-        return new Response(`Failed to fetch holdings page: ${response.status} ${response.statusText}`, {
+      let imgp = await env.DBMF_KV.get('imgp:latest', 'json');
+      if (!imgp || !imgp.rows || imgp.rows.length === 0) {
+        imgp = await refreshIMGPHoldings(env);
+      }
+      if (imgp && imgp.rows) {
+        filteredData = imgp.rows;
+      }
+
+      // Fallback source: weights parsed from the dbmfwatch email subscription
+      if (filteredData.length === 0) {
+        const cached = await env.DBMF_KV.get('dbmfwatch:latest', 'json');
+        if (cached && cached.rows && cached.rows.length > 0) {
+          filteredData = cached.rows;
+          sourceLabel = `dbmfwatch email (${cached.date})`;
+          sourceUrl = 'https://dbmfwatch.com';
+        }
+      }
+
+      if (filteredData.length === 0) {
+        return new Response('Failed to load holdings from both iMGP page and dbmfwatch email data', {
           status: 500,
           headers: { 'Content-Type': 'text/plain' }
         });
       }
 
-      const pageHTML = await response.text();
-
-      // Parse holdings from the HTML table
-      const filteredData = parseHoldingsFromHTML(pageHTML);
-      
       // Fetch prices for all tickers
       const tickers = filteredData.map(row => row['TICKER']);
       const prices = await fetchTickerPrices(tickers);
@@ -796,7 +1046,7 @@ async function handleMainPage(request, env, ctx) {
             ${htmlTable}
         </div>
         <div class="footer">
-            <span class="footer-item">Source: <a href="${HOLDINGS_URL}" target="_blank">iMGP Fund Page</a></span>
+            <span class="footer-item">Source: <a href="${sourceUrl}" target="_blank">${sourceLabel}</a></span>
             <span class="footer-divider"></span>
             <span class="footer-item">Updated: ${new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
             <span class="footer-divider"></span>
