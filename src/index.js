@@ -16,15 +16,23 @@ const BARCHART_SYMBOL_MAP = {
   'TU': 'ZT',   // 2-Year Treasury Note (US 2YR NOTE CBT)
 };
 
+// Parse plain numbers like "-3,735,600,000" or "$  -3,846,646,537.54"
+function parsePlainNumber(s) {
+  const n = parseFloat(s.replace(/[$,\s]/g, ''));
+  return isNaN(n) ? null : n;
+}
+
 // Parse holdings data from the iMGP fund HTML page
 function parseHoldingsFromHTML(html) {
   const rows = [];
+  let totalNetAssets = null;
+
   // Match each <tr class="holding row"> in the holdings table body
   const tableMatch = html.match(/<table[^>]*id="breakdown-holdings-us"[^>]*>([\s\S]*?)<\/table>/);
-  if (!tableMatch) return rows;
+  if (!tableMatch) return { rows, totalNetAssets };
 
   const tbodyMatch = tableMatch[1].match(/<tbody>([\s\S]*?)<\/tbody>/);
-  if (!tbodyMatch) return rows;
+  if (!tbodyMatch) return { rows, totalNetAssets };
 
   const rowRegex = /<tr class="holding row">([\s\S]*?)<\/tr>/g;
   let match;
@@ -39,26 +47,25 @@ function parseHoldingsFromHTML(html) {
     const securityName = getValue('security_name');
     const weight = parseFloat(getValue('weight'));
 
-    // Skip rows without a real ticker and the TOTAL NET ASSETS row
-    if (!ticker || ticker === '-' || securityName === 'TOTAL NET ASSETS') continue;
+    if (securityName === 'TOTAL NET ASSETS') {
+      totalNetAssets = parsePlainNumber(getValue('market_value'));
+      continue;
+    }
 
-    // Parse plain numbers like "-3,735,600,000" or "$  -3,846,646,537.54"
-    const parseNumber = (s) => {
-      const n = parseFloat(s.replace(/[$,\s]/g, ''));
-      return isNaN(n) ? null : n;
-    };
+    // Skip rows without a real ticker (treasury bills, cash)
+    if (!ticker || ticker === '-') continue;
 
     rows.push({
       'DATE': getValue('value_date'),
       'TICKER': ticker,
       'DESCRIPTION': securityName,
-      'SHARES': parseNumber(getValue('shares_qty')),
-      'VALUE': parseNumber(getValue('market_value')),
+      'SHARES': parsePlainNumber(getValue('shares_qty')),
+      'VALUE': parsePlainNumber(getValue('market_value')),
       'WEIGHT': weight,
     });
   }
 
-  return rows;
+  return { rows, totalNetAssets };
 }
 
 // Parse holdings from a dbmfwatch update email (HTML body).
@@ -118,7 +125,17 @@ export function parseHoldingsFromEmail(html) {
     });
   }
 
-  return { date, rows };
+  // The email has no explicit TNA row, but VALUE / WEIGHT approximates it
+  // for every row (both rounded); the median is a robust estimate
+  const ratios = rows
+    .filter(r => r.VALUE != null && r.WEIGHT)
+    .map(r => r.VALUE / r.WEIGHT)
+    .sort((a, b) => a - b);
+  const totalNetAssetsEstimate = ratios.length
+    ? Math.round(ratios[Math.floor(ratios.length / 2)])
+    : null;
+
+  return { date, rows, totalNetAssetsEstimate };
 }
 
 // Fetch the iMGP page, parse holdings, and store the result in KV.
@@ -130,7 +147,7 @@ async function refreshIMGPHoldings(env) {
       console.error(`iMGP page fetch failed: ${response.status} ${response.statusText}`);
       return null;
     }
-    const rows = parseHoldingsFromHTML(await response.text());
+    const { rows, totalNetAssets } = parseHoldingsFromHTML(await response.text());
     if (rows.length === 0) {
       console.error('iMGP page parsed to 0 holdings rows');
       return null;
@@ -139,6 +156,7 @@ async function refreshIMGPHoldings(env) {
       source: 'imgp',
       date: rows[0]['DATE'] || '',
       fetchedAt: new Date().toISOString(),
+      totalNetAssets,
       rows,
     };
     await env.DBMF_KV.put('imgp:latest', JSON.stringify(payload));
@@ -199,6 +217,14 @@ function compareSources(imgp, dbmfwatch, weightTolerance, sharesTolerance) {
 
   const imgpDate = normalizeDate(imgp.date);
   const dbmfwatchDate = normalizeDate(dbmfwatch.date);
+
+  // Informational only (not part of ok): the dbmfwatch figure is a derived
+  // estimate, not an independent measurement
+  const tnaRelDiff = imgp.totalNetAssets && dbmfwatch.totalNetAssetsEstimate
+    ? Math.round(Math.abs(imgp.totalNetAssets - dbmfwatch.totalNetAssetsEstimate)
+        / Math.abs(imgp.totalNetAssets) * 1e6) / 1e6
+    : null;
+
   return {
     ok: onlyInImgp.length === 0 && onlyInDbmfwatch.length === 0 &&
         diffs.every(d => d.weightOk && d.sharesOk !== false),
@@ -207,6 +233,9 @@ function compareSources(imgp, dbmfwatch, weightTolerance, sharesTolerance) {
     sameDate: imgpDate === dbmfwatchDate,
     weightTolerance,
     sharesTolerance,
+    imgpTotalNetAssets: imgp.totalNetAssets ?? null,
+    dbmfwatchTnaEstimate: dbmfwatch.totalNetAssetsEstimate ?? null,
+    tnaRelDiff,
     onlyInImgp,
     onlyInDbmfwatch,
     diffs,
@@ -277,7 +306,7 @@ export default {
 
     if (!/DBMF update/i.test(subject) || !parsed.html) return;
 
-    const { date, rows } = parseHoldingsFromEmail(parsed.html);
+    const { date, rows, totalNetAssetsEstimate } = parseHoldingsFromEmail(parsed.html);
     if (rows.length === 0) {
       console.error(`dbmfwatch email "${subject}" parsed to 0 holdings rows`);
       return;
@@ -287,6 +316,7 @@ export default {
       source: 'dbmfwatch',
       date,
       receivedAt: new Date().toISOString(),
+      totalNetAssetsEstimate,
       rows,
     });
     if (date) {
