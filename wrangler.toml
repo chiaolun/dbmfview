@@ -8,12 +8,13 @@ compatibility_date = "2023-12-01"
 #   { pattern = "example.com/*", zone_name = "example.com" }
 # ]
 
+# Holdings snapshots: imgp:latest (cron-refreshed iMGP page parse) and
+# dbmfwatch:latest / dbmfwatch:<date> (parsed from the emailed updates)
 [[kv_namespaces]]
 binding = "DBMF_KV"
 id = "843053e8606e4bc789bb94b0c7ebe839"
 
-# Refresh iMGP holdings shortly after the daily update (~11:40 UTC,
-# observed via the dbmfwatch email), with an afternoon catch-up run
+# Refresh the iMGP holdings snapshot hourly; reruns are harmless (the
+# stored payload only advances) and a failed fetch self-heals next hour
 [triggers]
-crons = ["15 12 * * *", "0 16 * * *"]
-
+crons = ["0 * * * *"]

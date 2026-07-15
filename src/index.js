@@ -436,12 +436,15 @@ async function handleMainPage(request, env, ctx) {
       let sourceLabel = 'iMGP Fund Page';
       let sourceUrl = HOLDINGS_URL;
 
+      let holdingsTimestamp = null;
+
       let imgp = await env.DBMF_KV.get('imgp:latest', 'json');
       if (!imgp || !imgp.rows || imgp.rows.length === 0) {
         imgp = await refreshIMGPHoldings(env);
       }
       if (imgp && imgp.rows) {
         filteredData = imgp.rows;
+        holdingsTimestamp = imgp.fetchedAt;
       }
 
       // Fallback source: weights parsed from the dbmfwatch email subscription
@@ -451,15 +454,24 @@ async function handleMainPage(request, env, ctx) {
           filteredData = cached.rows;
           sourceLabel = `dbmfwatch email (${cached.date})`;
           sourceUrl = 'https://dbmfwatch.com';
+          holdingsTimestamp = cached.receivedAt;
         }
       }
 
       if (filteredData.length === 0) {
-        return new Response('Failed to load holdings from both iMGP page and dbmfwatch email data', {
-          status: 500,
-          headers: { 'Content-Type': 'text/plain' }
+        return new Response('Holdings data not yet available. Please try again shortly.', {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain', 'Retry-After': '60' }
         });
       }
+
+      // Footer shows when the holdings snapshot was actually fetched
+      const holdingsUpdatedLabel = holdingsTimestamp
+        ? new Date(holdingsTimestamp).toLocaleDateString('en-US', {
+            weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York'
+          }) + ' ET'
+        : new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 
       // Fetch prices for all tickers
       const tickers = filteredData.map(row => row['TICKER']);
@@ -1078,7 +1090,7 @@ async function handleMainPage(request, env, ctx) {
         <div class="footer">
             <span class="footer-item">Source: <a href="${sourceUrl}" target="_blank">${sourceLabel}</a></span>
             <span class="footer-divider"></span>
-            <span class="footer-item">Updated: ${new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
+            <span class="footer-item">Holdings: ${holdingsUpdatedLabel}</span>
             <span class="footer-divider"></span>
             <div class="countdown">
                 <span class="countdown-number" id="countdown">60</span>
