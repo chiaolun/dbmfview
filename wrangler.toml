@@ -18,3 +18,12 @@ id = "843053e8606e4bc789bb94b0c7ebe839"
 # stored payload only advances) and a failed fetch self-heals next hour
 [triggers]
 crons = ["0 * * * *"]
+
+# Allocation-change alerts require Pushover credentials as secrets:
+#   npx wrangler secret put PUSHOVER_TOKEN
+#   npx wrangler secret put PUSHOVER_USER
+# Without them the worker logs a warning and skips the alert.
+[vars]
+# Minimum weight move (decimal) that counts as a resize; rolls and
+# opened/closed positions always alert regardless of this threshold
+ALERT_WEIGHT_THRESHOLD = "0.01"

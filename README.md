@@ -74,6 +74,30 @@ If the source URL changes, update the `EXCEL_URL` constant in `src/index.js`:
 const EXCEL_URL = 'https://imgpfunds.com/wp-content/uploads/pdfs/holdings/DBMF-Holdings.xlsx';
 ```
 
+### Allocation Change Alerts (Pushover)
+
+The worker compares each new holdings snapshot (hourly iMGP cron refresh, and
+incoming dbmfwatch emails) against the previous snapshot from the same source
+and sends a [Pushover](https://pushover.net/) notification when the allocation
+changes:
+
+- 🔄 Expiry rolls (e.g. `CLU6 → CLV6`), even at unchanged weight
+- ➕ New positions and ➖ closed positions
+- Δ Weight resizes beyond `ALERT_WEIGHT_THRESHOLD` (default `0.01` = 1
+  percentage point, configurable in `wrangler.toml`)
+
+Both sources report the same underlying change, so alerted changes are
+deduplicated per holdings date — whichever source lands first sends the alert.
+
+To enable, set your Pushover application token and user key as secrets:
+
+```bash
+npx wrangler secret put PUSHOVER_TOKEN
+npx wrangler secret put PUSHOVER_USER
+```
+
+If the secrets are missing, the worker logs a warning and skips the alert.
+
 ### Adjust Cache Duration
 
 To change how long the data is cached, modify the `Cache-Control` header in `src/index.js`:
