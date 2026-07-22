@@ -294,9 +294,20 @@ function normalizeDate(dateStr) {
   return dateStr;
 }
 
+// dbmfwatch abbreviates shares to one decimal of K/M/B (e.g. "-1.0B"), so a
+// parsed value is quantized to 0.1 × its unit; half that step is the largest
+// error pure display rounding can introduce
+function abbreviationHalfStep(v) {
+  const a = Math.abs(v);
+  const unit = a >= 1e9 ? 1e9 : a >= 1e6 ? 1e6 : a >= 1e3 ? 1e3 : 1;
+  return unit / 20;
+}
+
 // Cross-check the two sources: ticker sets, weights (absolute tolerance,
-// dbmfwatch rounds to 0.1pp) and shares (relative tolerance, dbmfwatch
-// abbreviates to ~2 significant figures)
+// dbmfwatch rounds to 0.1pp) and shares. Shares pass on either a relative
+// tolerance or an absolute diff within dbmfwatch's abbreviation rounding —
+// a flat relative bound alone can't work, since rounding error is up to 5%
+// when the abbreviated mantissa is near 1.0 but ~0.02% near 999.9
 function compareSources(imgp, dbmfwatch, weightTolerance, sharesTolerance) {
   const imgpMap = new Map(imgp.rows.map(r => [r.TICKER, r]));
   const dwMap = new Map(dbmfwatch.rows.map(r => [r.TICKER, r]));
@@ -318,7 +329,8 @@ function compareSources(imgp, dbmfwatch, weightTolerance, sharesTolerance) {
       const denom = Math.max(Math.abs(a.SHARES), Math.abs(b.SHARES));
       sharesRelDiff = denom === 0 ? 0 : Math.abs(a.SHARES - b.SHARES) / denom;
       sharesRelDiff = Math.round(sharesRelDiff * 1e6) / 1e6;
-      sharesOk = sharesRelDiff <= sharesTolerance;
+      sharesOk = sharesRelDiff <= sharesTolerance ||
+        Math.abs(a.SHARES - b.SHARES) <= abbreviationHalfStep(b.SHARES);
     }
 
     diffs.push({
