@@ -269,14 +269,18 @@ async function alertAllocationChanges(env, source, prevPayload, newPayload) {
     const fresh = changes.filter(c => !sent.has(c.key));
     if (fresh.length === 0) return;
 
-    await sendPushover(
+    const delivered = await sendPushover(
       env,
       `DBMF allocation change (${date})`,
       fresh.map(c => c.text).join('\n') + `\n\nvia ${source}`
     );
 
-    fresh.forEach(c => sent.add(c.key));
-    await env.DBMF_KV.put(sentKey, JSON.stringify([...sent]), { expirationTtl: 7 * 86400 });
+    // Only record keys as alerted on successful delivery, so a failed send
+    // (or missing secrets) is retried on the next sighting
+    if (delivered) {
+      fresh.forEach(c => sent.add(c.key));
+      await env.DBMF_KV.put(sentKey, JSON.stringify([...sent]), { expirationTtl: 7 * 86400 });
+    }
   } catch (e) {
     console.error('Error alerting allocation changes:', e);
   }
