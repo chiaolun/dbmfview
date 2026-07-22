@@ -159,11 +159,130 @@ async function refreshIMGPHoldings(env) {
       totalNetAssets,
       rows,
     };
+    const prev = await env.DBMF_KV.get('imgp:latest', 'json');
     await env.DBMF_KV.put('imgp:latest', JSON.stringify(payload));
+    await alertAllocationChanges(env, 'iMGP', prev, payload);
     return payload;
   } catch (e) {
     console.error('Error refreshing iMGP holdings:', e);
     return null;
+  }
+}
+
+const MONTH_CODES = 'FGHJKMNQUVXZ';
+
+// Extract the futures root from a per-contract ticker (CLU6 -> CL, MESU6 -> MES)
+function futuresRoot(ticker) {
+  const m = ticker.match(/^([A-Z]+?)[FGHJKMNQUVXZ]\d$/);
+  return m ? m[1] : ticker;
+}
+
+// Orderable expiry rank (year digit + month code), for pairing rolls
+function expiryOrder(ticker) {
+  const m = ticker.match(/([FGHJKMNQUVXZ])(\d)$/);
+  return m ? parseInt(m[2]) * 12 + MONTH_CODES.indexOf(m[1]) : 0;
+}
+
+// Diff two holdings snapshots into allocation changes. Expiry rolls (same
+// root, contract replaced) are always reported, even at unchanged weight;
+// weight-only moves must exceed weightThreshold (decimal, e.g. 0.01 = 1pp).
+// Each change carries a stable key so the same change seen again (e.g. from
+// the other source) can be deduped.
+export function computeAllocationChanges(prevRows, newRows, weightThreshold) {
+  const changes = [];
+  const fmt = w => (w >= 0 ? '+' : '') + (w * 100).toFixed(1) + '%';
+
+  const prevByTicker = new Map(prevRows.map(r => [r.TICKER, r]));
+  const newByTicker = new Map(newRows.map(r => [r.TICKER, r]));
+
+  const roots = [...new Set([...prevRows, ...newRows].map(r => futuresRoot(r.TICKER)))].sort();
+  for (const root of roots) {
+    const byExpiry = (a, b) => expiryOrder(a.TICKER) - expiryOrder(b.TICKER);
+    const removed = prevRows
+      .filter(r => futuresRoot(r.TICKER) === root && !newByTicker.has(r.TICKER))
+      .sort(byExpiry);
+    const added = newRows
+      .filter(r => futuresRoot(r.TICKER) === root && !prevByTicker.has(r.TICKER))
+      .sort(byExpiry);
+
+    // A removed and an added contract of the same root is a roll
+    const nRolls = Math.min(removed.length, added.length);
+    for (let i = 0; i < nRolls; i++) {
+      const from = removed[i], to = added[i];
+      const resized = Math.abs(to.WEIGHT - from.WEIGHT) >= weightThreshold;
+      changes.push({
+        key: `roll:${from.TICKER}>${to.TICKER}`,
+        text: `\u{1F504} ${root} rolled ${from.TICKER} → ${to.TICKER} ` +
+          (resized ? `(${fmt(from.WEIGHT)} → ${fmt(to.WEIGHT)})` : `(${fmt(to.WEIGHT)})`),
+      });
+    }
+    for (const r of removed.slice(nRolls)) {
+      changes.push({ key: `close:${r.TICKER}`, text: `➖ Closed ${r.TICKER} (was ${fmt(r.WEIGHT)})` });
+    }
+    for (const r of added.slice(nRolls)) {
+      changes.push({ key: `open:${r.TICKER}`, text: `➕ New ${r.TICKER} at ${fmt(r.WEIGHT)}` });
+    }
+    for (const r of newRows) {
+      if (futuresRoot(r.TICKER) !== root) continue;
+      const p = prevByTicker.get(r.TICKER);
+      if (p && Math.abs(r.WEIGHT - p.WEIGHT) >= weightThreshold) {
+        changes.push({ key: `resize:${r.TICKER}`, text: `Δ ${r.TICKER}: ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)}` });
+      }
+    }
+  }
+  return changes;
+}
+
+async function sendPushover(env, title, message) {
+  if (!env.PUSHOVER_TOKEN || !env.PUSHOVER_USER) {
+    console.warn('Pushover secrets not configured; skipping alert:', title);
+    return false;
+  }
+  const resp = await fetch('https://api.pushover.net/1/messages.json', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      token: env.PUSHOVER_TOKEN,
+      user: env.PUSHOVER_USER,
+      title,
+      message,
+    }),
+  });
+  if (!resp.ok) console.error('Pushover send failed:', resp.status, await resp.text());
+  return resp.ok;
+}
+
+// Compare a source's previous snapshot to its new one and push an alert for
+// any allocation changes not already alerted for this holdings date. Both
+// sources report the same underlying change, so alerted change keys are
+// recorded per date and skipped on the second sighting.
+async function alertAllocationChanges(env, source, prevPayload, newPayload) {
+  try {
+    if (!prevPayload?.rows?.length || !newPayload?.rows?.length) return;
+    const threshold = parseFloat(env.ALERT_WEIGHT_THRESHOLD) || 0.01;
+    const changes = computeAllocationChanges(prevPayload.rows, newPayload.rows, threshold);
+    if (changes.length === 0) return;
+
+    const date = normalizeDate(newPayload.date) || 'unknown';
+    const sentKey = `alert:sent:${date}`;
+    const sent = new Set(await env.DBMF_KV.get(sentKey, 'json') || []);
+    const fresh = changes.filter(c => !sent.has(c.key));
+    if (fresh.length === 0) return;
+
+    const delivered = await sendPushover(
+      env,
+      `DBMF allocation change (${date})`,
+      fresh.map(c => c.text).join('\n') + `\n\nvia ${source}`
+    );
+
+    // Only record keys as alerted on successful delivery, so a failed send
+    // (or missing secrets) is retried on the next sighting
+    if (delivered) {
+      fresh.forEach(c => sent.add(c.key));
+      await env.DBMF_KV.put(sentKey, JSON.stringify([...sent]), { expirationTtl: 7 * 86400 });
+    }
+  } catch (e) {
+    console.error('Error alerting allocation changes:', e);
   }
 }
 
@@ -312,20 +431,21 @@ export default {
       return;
     }
 
-    const payload = JSON.stringify({
+    const payload = {
       source: 'dbmfwatch',
       date,
       receivedAt: new Date().toISOString(),
       totalNetAssetsEstimate,
       rows,
-    });
+    };
     if (date) {
-      await env.DBMF_KV.put(`dbmfwatch:${date}`, payload);
+      await env.DBMF_KV.put(`dbmfwatch:${date}`, JSON.stringify(payload));
     }
     // Only advance "latest" — an old email forwarded later must not regress it
     const existing = await env.DBMF_KV.get('dbmfwatch:latest', 'json');
     if (!existing || !existing.date || (date && date >= existing.date)) {
-      await env.DBMF_KV.put('dbmfwatch:latest', payload);
+      await env.DBMF_KV.put('dbmfwatch:latest', JSON.stringify(payload));
+      await alertAllocationChanges(env, 'dbmfwatch', existing, payload);
     }
   }
 };
