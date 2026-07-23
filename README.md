@@ -81,10 +81,13 @@ incoming dbmfwatch emails) against the previous snapshot from the same source
 and sends a [Pushover](https://pushover.net/) notification when the allocation
 changes:
 
-- 🔄 Expiry rolls (e.g. `CLU6 → CLV6`), even at unchanged weight
+- 🔄 Expiry rolls (e.g. `CLU6 → CLV6`), even at unchanged size
 - ➕ New positions and ➖ closed positions
-- Δ Weight resizes beyond `ALERT_WEIGHT_THRESHOLD` (default `0.01` = 1
-  percentage point, configurable in `wrangler.toml`)
+- Δ Position resizes, measured as the relative change in **shares per dollar
+  of NAV** — weight drifts with price moves and share counts scale with fund
+  flows, but shares/NAV only changes when the fund actually trades. Alerts
+  fire beyond `ALERT_RESIZE_THRESHOLD` (default `0.10` = 10%, configurable
+  in `wrangler.toml`)
 
 Both sources report the same underlying change, so alerted changes are
 deduplicated per holdings date — whichever source lands first sends the alert.
