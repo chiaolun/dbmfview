@@ -183,14 +183,42 @@ function expiryOrder(ticker) {
   return m ? parseInt(m[2]) * 12 + MONTH_CODES.indexOf(m[1]) : 0;
 }
 
+// Fallback resize threshold (absolute weight, decimal) for snapshots that
+// predate the NAV fields — weight drifts with prices, so this is noisier
+const WEIGHT_FALLBACK_THRESHOLD = 0.01;
+
 // Diff two holdings snapshots into allocation changes. Expiry rolls (same
-// root, contract replaced) are always reported, even at unchanged weight;
-// weight-only moves must exceed weightThreshold (decimal, e.g. 0.01 = 1pp).
-// Each change carries a stable key so the same change seen again (e.g. from
-// the other source) can be deduped.
-export function computeAllocationChanges(prevRows, newRows, weightThreshold) {
+// root, contract replaced) are always reported, even at unchanged size, as
+// are opened and closed positions. Resizes are measured in shares per dollar
+// of NAV: weight drifts with price moves and share counts scale with fund
+// flows, but shares/NAV only changes when the fund actually trades. A resize
+// must exceed resizeThreshold (relative, e.g. 0.10 = 10%). Each change
+// carries a stable key so the same change seen again (e.g. from the other
+// source) can be deduped.
+export function computeAllocationChanges(prevPayload, newPayload, resizeThreshold) {
   const changes = [];
   const fmt = w => (w >= 0 ? '+' : '') + (w * 100).toFixed(1) + '%';
+
+  const prevRows = prevPayload.rows;
+  const newRows = newPayload.rows;
+  const prevTNA = prevPayload.totalNetAssets ?? prevPayload.totalNetAssetsEstimate ?? null;
+  const newTNA = newPayload.totalNetAssets ?? newPayload.totalNetAssetsEstimate ?? null;
+  const exposure = (r, tna) => (r.SHARES != null && tna ? r.SHARES / tna : null);
+
+  // Shares/NAV change from row a (prev snapshot) to row b (new snapshot):
+  // {rel, signed} relative change, or null when shares or NAV is missing
+  const sharesChange = (a, b) => {
+    const ma = exposure(a, prevTNA), mb = exposure(b, newTNA);
+    if (ma == null || mb == null) return null;
+    const denom = Math.max(Math.abs(ma), Math.abs(mb));
+    if (denom === 0) return { rel: 0, signed: 0 };
+    return { rel: Math.abs(mb - ma) / denom, signed: (mb - ma) / (Math.abs(ma) || denom) };
+  };
+  const isResized = (a, b) => {
+    const chg = sharesChange(a, b);
+    return chg ? chg.rel >= resizeThreshold
+               : Math.abs(b.WEIGHT - a.WEIGHT) >= WEIGHT_FALLBACK_THRESHOLD;
+  };
 
   const prevByTicker = new Map(prevRows.map(r => [r.TICKER, r]));
   const newByTicker = new Map(newRows.map(r => [r.TICKER, r]));
@@ -209,11 +237,10 @@ export function computeAllocationChanges(prevRows, newRows, weightThreshold) {
     const nRolls = Math.min(removed.length, added.length);
     for (let i = 0; i < nRolls; i++) {
       const from = removed[i], to = added[i];
-      const resized = Math.abs(to.WEIGHT - from.WEIGHT) >= weightThreshold;
       changes.push({
         key: `roll:${from.TICKER}>${to.TICKER}`,
         text: `\u{1F504} ${root} rolled ${from.TICKER} → ${to.TICKER} ` +
-          (resized ? `(${fmt(from.WEIGHT)} → ${fmt(to.WEIGHT)})` : `(${fmt(to.WEIGHT)})`),
+          (isResized(from, to) ? `(${fmt(from.WEIGHT)} → ${fmt(to.WEIGHT)})` : `(${fmt(to.WEIGHT)})`),
       });
     }
     for (const r of removed.slice(nRolls)) {
@@ -225,9 +252,12 @@ export function computeAllocationChanges(prevRows, newRows, weightThreshold) {
     for (const r of newRows) {
       if (futuresRoot(r.TICKER) !== root) continue;
       const p = prevByTicker.get(r.TICKER);
-      if (p && Math.abs(r.WEIGHT - p.WEIGHT) >= weightThreshold) {
-        changes.push({ key: `resize:${r.TICKER}`, text: `Δ ${r.TICKER}: ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)}` });
-      }
+      if (!p || !isResized(p, r)) continue;
+      const chg = sharesChange(p, r);
+      const detail = chg
+        ? `shares/NAV ${fmt(chg.signed)} (wt ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)})`
+        : `${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)}`;
+      changes.push({ key: `resize:${r.TICKER}`, text: `Δ ${r.TICKER}: ${detail}` });
     }
   }
   return changes;
@@ -259,8 +289,8 @@ async function sendPushover(env, title, message) {
 async function alertAllocationChanges(env, source, prevPayload, newPayload) {
   try {
     if (!prevPayload?.rows?.length || !newPayload?.rows?.length) return;
-    const threshold = parseFloat(env.ALERT_WEIGHT_THRESHOLD) || 0.01;
-    const changes = computeAllocationChanges(prevPayload.rows, newPayload.rows, threshold);
+    const threshold = parseFloat(env.ALERT_RESIZE_THRESHOLD) || 0.10;
+    const changes = computeAllocationChanges(prevPayload, newPayload, threshold);
     if (changes.length === 0) return;
 
     const date = normalizeDate(newPayload.date) || 'unknown';
