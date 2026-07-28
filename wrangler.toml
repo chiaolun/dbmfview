@@ -24,10 +24,9 @@ crons = ["0 * * * *"]
 #   npx wrangler secret put PUSHOVER_USER
 # Without them the worker logs a warning and skips the alert.
 [vars]
-# Minimum relative change in shares-per-dollar-of-NAV that counts as a
-# resize (0.10 = 10%); shares/NAV ignores price-driven weight drift and
+# Minimum raw change in shares-per-dollar-of-NAV, valued at the current
+# price (decimal, same units as weight), that counts as a resize
+# (0.01 = 1pp). Shares/NAV ignores price-driven weight drift and
 # flow-driven share scaling, so it only moves on actual trades. Rolls and
 # opened/closed positions always alert regardless of this threshold.
-# Kept above ~5% because dbmfwatch shares are rounded to ~2 significant
-# figures and its NAV is an estimate.
-ALERT_RESIZE_THRESHOLD = "0.10"
+ALERT_RESIZE_THRESHOLD = "0.01"

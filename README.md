@@ -83,11 +83,14 @@ changes:
 
 - 🔄 Expiry rolls (e.g. `CLU6 → CLV6`), even at unchanged size
 - ➕ New positions and ➖ closed positions
-- Δ Position resizes, measured as the relative change in **shares per dollar
-  of NAV** — weight drifts with price moves and share counts scale with fund
-  flows, but shares/NAV only changes when the fund actually trades. Alerts
-  fire beyond `ALERT_RESIZE_THRESHOLD` (default `0.10` = 10%, configurable
-  in `wrangler.toml`)
+- Δ Position resizes, detected via the raw change in **shares per dollar of
+  NAV, valued at the current price** — weight drifts with price moves and
+  share counts scale with fund flows, but shares/NAV only changes when the
+  fund actually trades; valuing that change at the current price puts it in
+  weight terms. Raw differences rather than relative ones, since long/short
+  positions can cross zero. Alerts fire beyond `ALERT_RESIZE_THRESHOLD`
+  (default `0.01` = 1pp, configurable in `wrangler.toml`) and report the old
+  and new weights with their raw percentage-point difference
 
 Both sources report the same underlying change, so alerted changes are
 deduplicated per holdings date — whichever source lands first sends the alert.

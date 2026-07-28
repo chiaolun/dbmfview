@@ -183,18 +183,17 @@ function expiryOrder(ticker) {
   return m ? parseInt(m[2]) * 12 + MONTH_CODES.indexOf(m[1]) : 0;
 }
 
-// Fallback resize threshold (absolute weight, decimal) for snapshots that
-// predate the NAV fields — weight drifts with prices, so this is noisier
-const WEIGHT_FALLBACK_THRESHOLD = 0.01;
-
 // Diff two holdings snapshots into allocation changes. Expiry rolls (same
 // root, contract replaced) are always reported, even at unchanged size, as
-// are opened and closed positions. Resizes are measured in shares per dollar
-// of NAV: weight drifts with price moves and share counts scale with fund
-// flows, but shares/NAV only changes when the fund actually trades. A resize
-// must exceed resizeThreshold (relative, e.g. 0.10 = 10%). Each change
-// carries a stable key so the same change seen again (e.g. from the other
-// source) can be deduped.
+// are opened and closed positions. Resizes are measured as the raw change in
+// shares per dollar of NAV, valued at the current contract price — shares/NAV
+// only moves when the fund actually trades (price drift leaves shares alone,
+// and flow-driven share scaling cancels against NAV), and valuing that change
+// at the current price expresses it in weight terms (decimal), so it must
+// exceed resizeThreshold (e.g. 0.01 = 1pp). Raw differences, not relative
+// ones — a relative figure is meaningless for long/short positions that
+// cross zero. Each change carries a stable key so the same change seen
+// again (e.g. from the other source) can be deduped.
 export function computeAllocationChanges(prevPayload, newPayload, resizeThreshold) {
   const changes = [];
   const fmt = w => (w >= 0 ? '+' : '') + (w * 100).toFixed(1) + '%';
@@ -204,20 +203,19 @@ export function computeAllocationChanges(prevPayload, newPayload, resizeThreshol
   const prevTNA = prevPayload.totalNetAssets ?? prevPayload.totalNetAssetsEstimate ?? null;
   const newTNA = newPayload.totalNetAssets ?? newPayload.totalNetAssetsEstimate ?? null;
   const exposure = (r, tna) => (r.SHARES != null && tna ? r.SHARES / tna : null);
+  const price = r => (r.SHARES && r.VALUE != null ? r.VALUE / r.SHARES : null);
 
-  // Shares/NAV change from row a (prev snapshot) to row b (new snapshot):
-  // {rel, signed} relative change, or null when shares or NAV is missing
-  const sharesChange = (a, b) => {
-    const ma = exposure(a, prevTNA), mb = exposure(b, newTNA);
-    if (ma == null || mb == null) return null;
-    const denom = Math.max(Math.abs(ma), Math.abs(mb));
-    if (denom === 0) return { rel: 0, signed: 0 };
-    return { rel: Math.abs(mb - ma) / denom, signed: (mb - ma) / (Math.abs(ma) || denom) };
-  };
+  // Raw shares/NAV change from row a (prev snapshot) to row b (new snapshot),
+  // valued at the current price so it lands in weight units; falls back to
+  // the raw difference of reported weights when shares, value or NAV is
+  // missing (noisier: weight drifts with prices)
   const isResized = (a, b) => {
-    const chg = sharesChange(a, b);
-    return chg ? chg.rel >= resizeThreshold
-               : Math.abs(b.WEIGHT - a.WEIGHT) >= WEIGHT_FALLBACK_THRESHOLD;
+    const ma = exposure(a, prevTNA), mb = exposure(b, newTNA);
+    const px = price(b) ?? price(a);
+    const diff = ma != null && mb != null && px != null
+      ? (mb - ma) * px
+      : b.WEIGHT - a.WEIGHT;
+    return Math.abs(diff) >= resizeThreshold;
   };
 
   const prevByTicker = new Map(prevRows.map(r => [r.TICKER, r]));
@@ -253,11 +251,11 @@ export function computeAllocationChanges(prevPayload, newPayload, resizeThreshol
       if (futuresRoot(r.TICKER) !== root) continue;
       const p = prevByTicker.get(r.TICKER);
       if (!p || !isResized(p, r)) continue;
-      const chg = sharesChange(p, r);
-      const detail = chg
-        ? `shares/NAV ${fmt(chg.signed)} (wt ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)})`
-        : `${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)}`;
-      changes.push({ key: `resize:${r.TICKER}`, text: `Δ ${r.TICKER}: ${detail}` });
+      const diff = fmt(r.WEIGHT - p.WEIGHT).replace('%', 'pp');
+      changes.push({
+        key: `resize:${r.TICKER}`,
+        text: `Δ ${r.TICKER}: ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)} (${diff})`,
+      });
     }
   }
   return changes;
@@ -289,7 +287,7 @@ async function sendPushover(env, title, message) {
 async function alertAllocationChanges(env, source, prevPayload, newPayload) {
   try {
     if (!prevPayload?.rows?.length || !newPayload?.rows?.length) return;
-    const threshold = parseFloat(env.ALERT_RESIZE_THRESHOLD) || 0.10;
+    const threshold = parseFloat(env.ALERT_RESIZE_THRESHOLD) || 0.01;
     const changes = computeAllocationChanges(prevPayload, newPayload, threshold);
     if (changes.length === 0) return;
 
