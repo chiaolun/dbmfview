@@ -83,14 +83,23 @@ changes:
 
 - 🔄 Expiry rolls (e.g. `CLU6 → CLV6`), even at unchanged size
 - ➕ New positions and ➖ closed positions
-- Δ Position resizes, detected via the raw change in **shares per dollar of
-  NAV, valued at the current price** — weight drifts with price moves and
-  share counts scale with fund flows, but shares/NAV only changes when the
-  fund actually trades; valuing that change at the current price puts it in
-  weight terms. Raw differences rather than relative ones, since long/short
-  positions can cross zero. Alerts fire beyond `ALERT_RESIZE_THRESHOLD`
-  (default `0.01` = 1pp, configurable in `wrangler.toml`) and report the old
-  and new weights with their raw percentage-point difference
+- Δ Position resizes, sized in **risk terms**: the raw change in shares per
+  dollar of NAV, valued at the current price and scaled by the instrument's
+  annualized volatility, giving the annualized risk the trade added or
+  removed as a fraction of NAV. Shares/NAV is the right base because weight
+  drifts with price moves and share counts scale with fund flows, while
+  shares/NAV only changes when the fund actually trades; the vol factor is
+  what makes a single threshold meaningful across instruments, since a 10pp
+  shift in 2-year notes is nothing like a 10pp shift in crude. Raw
+  differences rather than relative ones, since long/short positions can
+  cross zero. Alerts fire beyond `ALERT_RISK_THRESHOLD` (default `0.002` =
+  20bp of NAV vol, configurable in `wrangler.toml`) and report the old and
+  new weights, their percentage-point difference, and the risk change
+
+  Per-instrument volatilities live in `ANNUAL_VOL_BY_ROOT` in
+  `src/index.js`. They are rough long-run estimates and only need to be
+  right to within a factor of ~1.5 to rank trades sensibly; unknown roots
+  fall back to `DEFAULT_ANNUAL_VOL`.
 
 Both sources report the same underlying change, so alerted changes are
 deduplicated per holdings date — whichever source lands first sends the alert.

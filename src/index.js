@@ -183,20 +183,46 @@ function expiryOrder(ticker) {
   return m ? parseInt(m[2]) * 12 + MONTH_CODES.indexOf(m[1]) : 0;
 }
 
+// Rough annualized volatility (decimal) per futures root, used to size a
+// position change in risk terms. Notional alone is the wrong yardstick: a
+// 10pp move in 2-year notes and a 10pp move in crude are not remotely the
+// same trade. Precision here does not matter much — these only need to be
+// right to within a factor of ~1.5 to rank trades sensibly.
+const ANNUAL_VOL_BY_ROOT = {
+  'CL': 0.35,   // Crude Oil
+  'ES': 0.16,   // E-mini S&P 500
+  'MES': 0.18,  // MSCI Emerging Markets
+  'JY': 0.10,   // Japanese Yen
+  'MFS': 0.15,  // MSCI EAFE
+  'EC': 0.08,   // Euro
+  'GC': 0.15,   // Gold
+  'US': 0.12,   // 30-Year Treasury Bond
+  'TY': 0.06,   // 10-Year Treasury Note
+  'TU': 0.015,  // 2-Year Treasury Note
+};
+const DEFAULT_ANNUAL_VOL = 0.15;
+
+const annualVol = ticker => ANNUAL_VOL_BY_ROOT[futuresRoot(ticker)] ?? DEFAULT_ANNUAL_VOL;
+
 // Diff two holdings snapshots into allocation changes. Expiry rolls (same
 // root, contract replaced) are always reported, even at unchanged size, as
-// are opened and closed positions. Resizes are measured as the raw change in
-// shares per dollar of NAV, valued at the current contract price — shares/NAV
-// only moves when the fund actually trades (price drift leaves shares alone,
-// and flow-driven share scaling cancels against NAV), and valuing that change
-// at the current price expresses it in weight terms (decimal), so it must
-// exceed resizeThreshold (e.g. 0.01 = 1pp). Raw differences, not relative
-// ones — a relative figure is meaningless for long/short positions that
-// cross zero. Each change carries a stable key so the same change seen
-// again (e.g. from the other source) can be deduped.
-export function computeAllocationChanges(prevPayload, newPayload, resizeThreshold) {
+// are opened and closed positions. Resizes are measured as the change in
+// shares per dollar of NAV, valued at the current contract price and scaled
+// by the instrument's annualized volatility — i.e. how much annualized risk
+// the trade added or removed, as a fraction of NAV. Shares/NAV only moves
+// when the fund actually trades (price drift leaves shares alone, and
+// flow-driven share scaling cancels against NAV); the vol factor then makes
+// the threshold comparable across instruments, so a big notional shuffle in
+// short-dated rates is not treated like an equally large one in crude. The
+// change must exceed riskThreshold (decimal fraction of NAV, e.g. 0.002 =
+// 20bp of annualized vol). Raw differences, not relative ones — a relative
+// figure is meaningless for long/short positions that cross zero. Each
+// change carries a stable key so the same change seen again (e.g. from the
+// other source) can be deduped.
+export function computeAllocationChanges(prevPayload, newPayload, riskThreshold) {
   const changes = [];
   const fmt = w => (w >= 0 ? '+' : '') + (w * 100).toFixed(1) + '%';
+  const fmtRisk = r => (r >= 0 ? '+' : '') + Math.round(r * 1e4) + 'bp vol';
 
   const prevRows = prevPayload.rows;
   const newRows = newPayload.rows;
@@ -205,18 +231,21 @@ export function computeAllocationChanges(prevPayload, newPayload, resizeThreshol
   const exposure = (r, tna) => (r.SHARES != null && tna ? r.SHARES / tna : null);
   const price = r => (r.SHARES && r.VALUE != null ? r.VALUE / r.SHARES : null);
 
-  // Raw shares/NAV change from row a (prev snapshot) to row b (new snapshot),
-  // valued at the current price so it lands in weight units; falls back to
-  // the raw difference of reported weights when shares, value or NAV is
-  // missing (noisier: weight drifts with prices)
-  const isResized = (a, b) => {
+  // Risk added/removed going from row a (prev snapshot) to row b (new), as a
+  // fraction of NAV in annualized vol terms: the shares/NAV change valued at
+  // the current price, times the instrument's vol. Falls back to the raw
+  // difference of reported weights when shares, value or NAV is missing
+  // (noisier: weight drifts with prices), scaled the same way so the
+  // threshold keeps its units.
+  const riskChange = (a, b) => {
     const ma = exposure(a, prevTNA), mb = exposure(b, newTNA);
     const px = price(b) ?? price(a);
-    const diff = ma != null && mb != null && px != null
+    const weightChange = ma != null && mb != null && px != null
       ? (mb - ma) * px
       : b.WEIGHT - a.WEIGHT;
-    return Math.abs(diff) >= resizeThreshold;
+    return weightChange * annualVol(b.TICKER);
   };
+  const isResized = (a, b) => Math.abs(riskChange(a, b)) >= riskThreshold;
 
   const prevByTicker = new Map(prevRows.map(r => [r.TICKER, r]));
   const newByTicker = new Map(newRows.map(r => [r.TICKER, r]));
@@ -254,7 +283,7 @@ export function computeAllocationChanges(prevPayload, newPayload, resizeThreshol
       const diff = fmt(r.WEIGHT - p.WEIGHT).replace('%', 'pp');
       changes.push({
         key: `resize:${r.TICKER}`,
-        text: `Δ ${r.TICKER}: ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)} (${diff})`,
+        text: `Δ ${r.TICKER}: ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)} (${diff}, ${fmtRisk(riskChange(p, r))})`,
       });
     }
   }
@@ -287,7 +316,7 @@ async function sendPushover(env, title, message) {
 async function alertAllocationChanges(env, source, prevPayload, newPayload) {
   try {
     if (!prevPayload?.rows?.length || !newPayload?.rows?.length) return;
-    const threshold = parseFloat(env.ALERT_RESIZE_THRESHOLD) || 0.01;
+    const threshold = parseFloat(env.ALERT_RISK_THRESHOLD) || 0.002;
     const changes = computeAllocationChanges(prevPayload, newPayload, threshold);
     if (changes.length === 0) return;
 
