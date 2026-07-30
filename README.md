@@ -98,8 +98,13 @@ changes:
 
   Per-instrument volatilities live in `ANNUAL_VOL_BY_ROOT` in
   `src/index.js`. They are rough long-run estimates and only need to be
-  right to within a factor of ~1.5 to rank trades sensibly; unknown roots
-  fall back to `DEFAULT_ANNUAL_VOL`.
+  right to within a factor of ~1.5 to rank trades sensibly. A root with no
+  entry is a **hard failure**, not a guessed default — a wrong vol silently
+  mis-scales every threshold for that instrument and looks identical to a
+  right one in the output. The diff throws, no alerts are sent for that
+  snapshot, and a `⚠️ DBMF alerting failed` Pushover notification names the
+  missing root so it can be added (deduped per day, so a persistent fault
+  will not re-notify hourly).
 
 Both sources report the same underlying change, so alerted changes are
 deduplicated per holdings date — whichever source lands first sends the alert.

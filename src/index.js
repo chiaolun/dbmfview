@@ -200,9 +200,21 @@ const ANNUAL_VOL_BY_ROOT = {
   'TY': 0.06,   // 10-Year Treasury Note
   'TU': 0.015,  // 2-Year Treasury Note
 };
-const DEFAULT_ANNUAL_VOL = 0.15;
 
-const annualVol = ticker => ANNUAL_VOL_BY_ROOT[futuresRoot(ticker)] ?? DEFAULT_ANNUAL_VOL;
+// Hard fail rather than defaulting: a guessed vol silently mis-scales every
+// threshold for that instrument, and the wrong number is indistinguishable
+// from a right one in the output. The caller turns this into a notification.
+function annualVol(ticker) {
+  const root = futuresRoot(ticker);
+  const vol = ANNUAL_VOL_BY_ROOT[root];
+  if (vol == null) {
+    throw new Error(
+      `No annualized volatility configured for root ${root} (ticker ${ticker}) — ` +
+      `add it to ANNUAL_VOL_BY_ROOT in src/index.js`
+    );
+  }
+  return vol;
+}
 
 // Diff two holdings snapshots into allocation changes. Expiry rolls (same
 // root, contract replaced) are always reported, even at unchanged size, as
@@ -340,6 +352,24 @@ async function alertAllocationChanges(env, source, prevPayload, newPayload) {
     }
   } catch (e) {
     console.error('Error alerting allocation changes:', e);
+    await reportAlertFailure(env, source, e);
+  }
+}
+
+// A failure in the diff (an instrument with no configured volatility, say)
+// suppresses every alert for that snapshot, so it has to be louder than a
+// log line nobody reads. Deduped per day so a persistent fault does not
+// re-notify on every hourly refresh.
+async function reportAlertFailure(env, source, error) {
+  try {
+    const key = `alert:error:${new Date().toISOString().slice(0, 10)}`;
+    const message = `${error.message}\n\nvia ${source}`;
+    if (await env.DBMF_KV.get(key) === message) return;
+    if (await sendPushover(env, '⚠️ DBMF alerting failed', message)) {
+      await env.DBMF_KV.put(key, message, { expirationTtl: 7 * 86400 });
+    }
+  } catch (e) {
+    console.error('Error reporting alert failure:', e);
   }
 }
 
