@@ -201,20 +201,11 @@ const ANNUAL_VOL_BY_ROOT = {
   'TU': 0.015,  // 2-Year Treasury Note
 };
 
-// Hard fail rather than defaulting: a guessed vol silently mis-scales every
+// Null rather than a default: a guessed vol silently mis-scales every
 // threshold for that instrument, and the wrong number is indistinguishable
-// from a right one in the output. The caller turns this into a notification.
-function annualVol(ticker) {
-  const root = futuresRoot(ticker);
-  const vol = ANNUAL_VOL_BY_ROOT[root];
-  if (vol == null) {
-    throw new Error(
-      `No annualized volatility configured for root ${root} (ticker ${ticker}) — ` +
-      `add it to ANNUAL_VOL_BY_ROOT in src/index.js`
-    );
-  }
-  return vol;
-}
+// from a right one in the output. Changes in a root with no vol are still
+// reported — unsized, and flagged — never dropped.
+const annualVol = ticker => ANNUAL_VOL_BY_ROOT[futuresRoot(ticker)] ?? null;
 
 // Diff two holdings snapshots into allocation changes. Expiry rolls (same
 // root, contract replaced) are always reported, even at unchanged size, as
@@ -243,21 +234,34 @@ export function computeAllocationChanges(prevPayload, newPayload, riskThreshold)
   const exposure = (r, tna) => (r.SHARES != null && tna ? r.SHARES / tna : null);
   const price = r => (r.SHARES && r.VALUE != null ? r.VALUE / r.SHARES : null);
 
-  // Risk added/removed going from row a (prev snapshot) to row b (new), as a
-  // fraction of NAV in annualized vol terms: the shares/NAV change valued at
-  // the current price, times the instrument's vol. Falls back to the raw
-  // difference of reported weights when shares, value or NAV is missing
-  // (noisier: weight drifts with prices), scaled the same way so the
-  // threshold keeps its units.
-  const riskChange = (a, b) => {
+  // Change in shares per dollar of NAV going from row a (prev snapshot) to
+  // row b (new), valued at the current price so it lands in weight units.
+  // Falls back to the raw difference of reported weights when shares, value
+  // or NAV is missing (noisier: weight drifts with prices).
+  const weightChange = (a, b) => {
     const ma = exposure(a, prevTNA), mb = exposure(b, newTNA);
     const px = price(b) ?? price(a);
-    const weightChange = ma != null && mb != null && px != null
+    return ma != null && mb != null && px != null
       ? (mb - ma) * px
       : b.WEIGHT - a.WEIGHT;
-    return weightChange * annualVol(b.TICKER);
   };
-  const isResized = (a, b) => Math.abs(riskChange(a, b)) >= riskThreshold;
+
+  // The same change in annualized vol terms — the risk the trade added or
+  // removed as a fraction of NAV. Null when the root has no configured vol.
+  const riskChange = (a, b) => {
+    const vol = annualVol(b.TICKER);
+    return vol == null ? null : weightChange(a, b) * vol;
+  };
+
+  // Without a vol there is no basis for judging materiality, so report any
+  // real move (shares/NAV shifted at all) rather than silently dropping it —
+  // the alert says the size is unknown and names the root to configure.
+  const isResized = (a, b) => {
+    const risk = riskChange(a, b);
+    return risk == null
+      ? Math.abs(weightChange(a, b)) > 1e-6
+      : Math.abs(risk) >= riskThreshold;
+  };
 
   const prevByTicker = new Map(prevRows.map(r => [r.TICKER, r]));
   const newByTicker = new Map(newRows.map(r => [r.TICKER, r]));
@@ -277,29 +281,45 @@ export function computeAllocationChanges(prevPayload, newPayload, riskThreshold)
     for (let i = 0; i < nRolls; i++) {
       const from = removed[i], to = added[i];
       changes.push({
+        root,
         key: `roll:${from.TICKER}>${to.TICKER}`,
         text: `\u{1F504} ${root} rolled ${from.TICKER} → ${to.TICKER} ` +
           (isResized(from, to) ? `(${fmt(from.WEIGHT)} → ${fmt(to.WEIGHT)})` : `(${fmt(to.WEIGHT)})`),
       });
     }
     for (const r of removed.slice(nRolls)) {
-      changes.push({ key: `close:${r.TICKER}`, text: `➖ Closed ${r.TICKER} (was ${fmt(r.WEIGHT)})` });
+      changes.push({ root, key: `close:${r.TICKER}`, text: `➖ Closed ${r.TICKER} (was ${fmt(r.WEIGHT)})` });
     }
     for (const r of added.slice(nRolls)) {
-      changes.push({ key: `open:${r.TICKER}`, text: `➕ New ${r.TICKER} at ${fmt(r.WEIGHT)}` });
+      changes.push({ root, key: `open:${r.TICKER}`, text: `➕ New ${r.TICKER} at ${fmt(r.WEIGHT)}` });
     }
     for (const r of newRows) {
       if (futuresRoot(r.TICKER) !== root) continue;
       const p = prevByTicker.get(r.TICKER);
       if (!p || !isResized(p, r)) continue;
       const diff = fmt(r.WEIGHT - p.WEIGHT).replace('%', 'pp');
+      const risk = riskChange(p, r);
       changes.push({
+        root,
         key: `resize:${r.TICKER}`,
-        text: `Δ ${r.TICKER}: ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)} (${diff}, ${fmtRisk(riskChange(p, r))})`,
+        text: `Δ ${r.TICKER}: ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)} ` +
+          `(${diff}, ${risk == null ? 'size unknown' : fmtRisk(risk)})`,
       });
     }
   }
-  return changes;
+
+  // Flag any root involved in a reported change that has no configured vol:
+  // those changes could not be sized or thresholded, so say so rather than
+  // letting them read like they cleared the bar.
+  const warnings = [...new Set(changes.map(c => c.root))]
+    .filter(root => ANNUAL_VOL_BY_ROOT[root] == null)
+    .sort()
+    .map(root =>
+      `⚠️ No annualized volatility configured for ${root} — its changes above are ` +
+      `unsized and unfiltered; add it to ANNUAL_VOL_BY_ROOT in src/index.js`
+    );
+
+  return { changes, warnings };
 }
 
 async function sendPushover(env, title, message) {
@@ -329,7 +349,7 @@ async function alertAllocationChanges(env, source, prevPayload, newPayload) {
   try {
     if (!prevPayload?.rows?.length || !newPayload?.rows?.length) return;
     const threshold = parseFloat(env.ALERT_RISK_THRESHOLD) || 0.002;
-    const changes = computeAllocationChanges(prevPayload, newPayload, threshold);
+    const { changes, warnings } = computeAllocationChanges(prevPayload, newPayload, threshold);
     if (changes.length === 0) return;
 
     const date = normalizeDate(newPayload.date) || 'unknown';
@@ -338,10 +358,16 @@ async function alertAllocationChanges(env, source, prevPayload, newPayload) {
     const fresh = changes.filter(c => !sent.has(c.key));
     if (fresh.length === 0) return;
 
+    // Only warn about roots the surviving changes actually involve
+    const freshRoots = new Set(fresh.map(c => c.root));
+    const relevant = warnings.filter(w => [...freshRoots].some(r => w.includes(` for ${r} —`)));
+
     const delivered = await sendPushover(
       env,
       `DBMF allocation change (${date})`,
-      fresh.map(c => c.text).join('\n') + `\n\nvia ${source}`
+      fresh.map(c => c.text).join('\n') +
+        (relevant.length ? `\n\n${relevant.join('\n')}` : '') +
+        `\n\nvia ${source}`
     );
 
     // Only record keys as alerted on successful delivery, so a failed send
