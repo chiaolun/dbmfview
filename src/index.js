@@ -183,20 +183,49 @@ function expiryOrder(ticker) {
   return m ? parseInt(m[2]) * 12 + MONTH_CODES.indexOf(m[1]) : 0;
 }
 
+// Rough annualized volatility (decimal) per futures root, used to size a
+// position change in risk terms. Notional alone is the wrong yardstick: a
+// 10pp move in 2-year notes and a 10pp move in crude are not remotely the
+// same trade. Precision here does not matter much — these only need to be
+// right to within a factor of ~1.5 to rank trades sensibly.
+const ANNUAL_VOL_BY_ROOT = {
+  'CL': 0.35,   // Crude Oil
+  'ES': 0.16,   // E-mini S&P 500
+  'MES': 0.18,  // MSCI Emerging Markets
+  'JY': 0.10,   // Japanese Yen
+  'MFS': 0.15,  // MSCI EAFE
+  'EC': 0.08,   // Euro
+  'GC': 0.15,   // Gold
+  'US': 0.12,   // 30-Year Treasury Bond
+  'TY': 0.06,   // 10-Year Treasury Note
+  'TU': 0.015,  // 2-Year Treasury Note
+};
+
+// Null rather than a default: a guessed vol silently mis-scales every
+// threshold for that instrument, and the wrong number is indistinguishable
+// from a right one in the output. Changes in a root with no vol are still
+// reported — unsized, and flagged — never dropped.
+const annualVol = ticker => ANNUAL_VOL_BY_ROOT[futuresRoot(ticker)] ?? null;
+
 // Diff two holdings snapshots into allocation changes. Expiry rolls (same
 // root, contract replaced) are always reported, even at unchanged size, as
-// are opened and closed positions. Resizes are measured as the raw change in
-// shares per dollar of NAV, valued at the current contract price — shares/NAV
-// only moves when the fund actually trades (price drift leaves shares alone,
-// and flow-driven share scaling cancels against NAV), and valuing that change
-// at the current price expresses it in weight terms (decimal), so it must
-// exceed resizeThreshold (e.g. 0.01 = 1pp). Raw differences, not relative
-// ones — a relative figure is meaningless for long/short positions that
-// cross zero. Each change carries a stable key so the same change seen
-// again (e.g. from the other source) can be deduped.
-export function computeAllocationChanges(prevPayload, newPayload, resizeThreshold) {
+// are opened and closed positions. Resizes are measured as the change in
+// shares per dollar of NAV, valued at the current contract price and scaled
+// by the instrument's annualized volatility — i.e. how much annualized risk
+// the trade added or removed, as a fraction of NAV. Shares/NAV only moves
+// when the fund actually trades (price drift leaves shares alone, and
+// flow-driven share scaling cancels against NAV); the vol factor then makes
+// the threshold comparable across instruments, so a big notional shuffle in
+// short-dated rates is not treated like an equally large one in crude. The
+// change must exceed riskThreshold (decimal fraction of NAV, e.g. 0.002 =
+// 20bp of annualized vol). Raw differences, not relative ones — a relative
+// figure is meaningless for long/short positions that cross zero. Each
+// change carries a stable key so the same change seen again (e.g. from the
+// other source) can be deduped.
+export function computeAllocationChanges(prevPayload, newPayload, riskThreshold) {
   const changes = [];
   const fmt = w => (w >= 0 ? '+' : '') + (w * 100).toFixed(1) + '%';
+  const fmtRisk = r => (r >= 0 ? '+' : '') + Math.round(r * 1e4) + 'bp vol';
 
   const prevRows = prevPayload.rows;
   const newRows = newPayload.rows;
@@ -205,17 +234,33 @@ export function computeAllocationChanges(prevPayload, newPayload, resizeThreshol
   const exposure = (r, tna) => (r.SHARES != null && tna ? r.SHARES / tna : null);
   const price = r => (r.SHARES && r.VALUE != null ? r.VALUE / r.SHARES : null);
 
-  // Raw shares/NAV change from row a (prev snapshot) to row b (new snapshot),
-  // valued at the current price so it lands in weight units; falls back to
-  // the raw difference of reported weights when shares, value or NAV is
-  // missing (noisier: weight drifts with prices)
-  const isResized = (a, b) => {
+  // Change in shares per dollar of NAV going from row a (prev snapshot) to
+  // row b (new), valued at the current price so it lands in weight units.
+  // Falls back to the raw difference of reported weights when shares, value
+  // or NAV is missing (noisier: weight drifts with prices).
+  const weightChange = (a, b) => {
     const ma = exposure(a, prevTNA), mb = exposure(b, newTNA);
     const px = price(b) ?? price(a);
-    const diff = ma != null && mb != null && px != null
+    return ma != null && mb != null && px != null
       ? (mb - ma) * px
       : b.WEIGHT - a.WEIGHT;
-    return Math.abs(diff) >= resizeThreshold;
+  };
+
+  // The same change in annualized vol terms — the risk the trade added or
+  // removed as a fraction of NAV. Null when the root has no configured vol.
+  const riskChange = (a, b) => {
+    const vol = annualVol(b.TICKER);
+    return vol == null ? null : weightChange(a, b) * vol;
+  };
+
+  // Without a vol there is no basis for judging materiality, so report any
+  // real move (shares/NAV shifted at all) rather than silently dropping it —
+  // the alert says the size is unknown and names the root to configure.
+  const isResized = (a, b) => {
+    const risk = riskChange(a, b);
+    return risk == null
+      ? Math.abs(weightChange(a, b)) > 1e-6
+      : Math.abs(risk) >= riskThreshold;
   };
 
   const prevByTicker = new Map(prevRows.map(r => [r.TICKER, r]));
@@ -236,29 +281,45 @@ export function computeAllocationChanges(prevPayload, newPayload, resizeThreshol
     for (let i = 0; i < nRolls; i++) {
       const from = removed[i], to = added[i];
       changes.push({
+        root,
         key: `roll:${from.TICKER}>${to.TICKER}`,
         text: `\u{1F504} ${root} rolled ${from.TICKER} → ${to.TICKER} ` +
           (isResized(from, to) ? `(${fmt(from.WEIGHT)} → ${fmt(to.WEIGHT)})` : `(${fmt(to.WEIGHT)})`),
       });
     }
     for (const r of removed.slice(nRolls)) {
-      changes.push({ key: `close:${r.TICKER}`, text: `➖ Closed ${r.TICKER} (was ${fmt(r.WEIGHT)})` });
+      changes.push({ root, key: `close:${r.TICKER}`, text: `➖ Closed ${r.TICKER} (was ${fmt(r.WEIGHT)})` });
     }
     for (const r of added.slice(nRolls)) {
-      changes.push({ key: `open:${r.TICKER}`, text: `➕ New ${r.TICKER} at ${fmt(r.WEIGHT)}` });
+      changes.push({ root, key: `open:${r.TICKER}`, text: `➕ New ${r.TICKER} at ${fmt(r.WEIGHT)}` });
     }
     for (const r of newRows) {
       if (futuresRoot(r.TICKER) !== root) continue;
       const p = prevByTicker.get(r.TICKER);
       if (!p || !isResized(p, r)) continue;
       const diff = fmt(r.WEIGHT - p.WEIGHT).replace('%', 'pp');
+      const risk = riskChange(p, r);
       changes.push({
+        root,
         key: `resize:${r.TICKER}`,
-        text: `Δ ${r.TICKER}: ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)} (${diff})`,
+        text: `Δ ${r.TICKER}: ${fmt(p.WEIGHT)} → ${fmt(r.WEIGHT)} ` +
+          `(${diff}, ${risk == null ? 'size unknown' : fmtRisk(risk)})`,
       });
     }
   }
-  return changes;
+
+  // Flag any root involved in a reported change that has no configured vol:
+  // those changes could not be sized or thresholded, so say so rather than
+  // letting them read like they cleared the bar.
+  const warnings = [...new Set(changes.map(c => c.root))]
+    .filter(root => ANNUAL_VOL_BY_ROOT[root] == null)
+    .sort()
+    .map(root =>
+      `⚠️ No annualized volatility configured for ${root} — its changes above are ` +
+      `unsized and unfiltered; add it to ANNUAL_VOL_BY_ROOT in src/index.js`
+    );
+
+  return { changes, warnings };
 }
 
 async function sendPushover(env, title, message) {
@@ -287,8 +348,8 @@ async function sendPushover(env, title, message) {
 async function alertAllocationChanges(env, source, prevPayload, newPayload) {
   try {
     if (!prevPayload?.rows?.length || !newPayload?.rows?.length) return;
-    const threshold = parseFloat(env.ALERT_RESIZE_THRESHOLD) || 0.01;
-    const changes = computeAllocationChanges(prevPayload, newPayload, threshold);
+    const threshold = parseFloat(env.ALERT_RISK_THRESHOLD) || 0.002;
+    const { changes, warnings } = computeAllocationChanges(prevPayload, newPayload, threshold);
     if (changes.length === 0) return;
 
     const date = normalizeDate(newPayload.date) || 'unknown';
@@ -297,10 +358,16 @@ async function alertAllocationChanges(env, source, prevPayload, newPayload) {
     const fresh = changes.filter(c => !sent.has(c.key));
     if (fresh.length === 0) return;
 
+    // Only warn about roots the surviving changes actually involve
+    const freshRoots = new Set(fresh.map(c => c.root));
+    const relevant = warnings.filter(w => [...freshRoots].some(r => w.includes(` for ${r} —`)));
+
     const delivered = await sendPushover(
       env,
       `DBMF allocation change (${date})`,
-      fresh.map(c => c.text).join('\n') + `\n\nvia ${source}`
+      fresh.map(c => c.text).join('\n') +
+        (relevant.length ? `\n\n${relevant.join('\n')}` : '') +
+        `\n\nvia ${source}`
     );
 
     // Only record keys as alerted on successful delivery, so a failed send
@@ -311,6 +378,24 @@ async function alertAllocationChanges(env, source, prevPayload, newPayload) {
     }
   } catch (e) {
     console.error('Error alerting allocation changes:', e);
+    await reportAlertFailure(env, source, e);
+  }
+}
+
+// A failure in the diff (an instrument with no configured volatility, say)
+// suppresses every alert for that snapshot, so it has to be louder than a
+// log line nobody reads. Deduped per day so a persistent fault does not
+// re-notify on every hourly refresh.
+async function reportAlertFailure(env, source, error) {
+  try {
+    const key = `alert:error:${new Date().toISOString().slice(0, 10)}`;
+    const message = `${error.message}\n\nvia ${source}`;
+    if (await env.DBMF_KV.get(key) === message) return;
+    if (await sendPushover(env, '⚠️ DBMF alerting failed', message)) {
+      await env.DBMF_KV.put(key, message, { expirationTtl: 7 * 86400 });
+    }
+  } catch (e) {
+    console.error('Error reporting alert failure:', e);
   }
 }
 

@@ -24,9 +24,16 @@ crons = ["0 * * * *"]
 #   npx wrangler secret put PUSHOVER_USER
 # Without them the worker logs a warning and skips the alert.
 [vars]
-# Minimum raw change in shares-per-dollar-of-NAV, valued at the current
-# price (decimal, same units as weight), that counts as a resize
-# (0.01 = 1pp). Shares/NAV ignores price-driven weight drift and
-# flow-driven share scaling, so it only moves on actual trades. Rolls and
-# opened/closed positions always alert regardless of this threshold.
-ALERT_RESIZE_THRESHOLD = "0.01"
+# Minimum risk change that counts as a resize, as a decimal fraction of NAV
+# in annualized volatility terms (0.002 = 20bp of NAV vol). The change in
+# shares-per-dollar-of-NAV is valued at the current price and scaled by the
+# instrument's annualized vol: shares/NAV ignores price-driven weight drift
+# and flow-driven share scaling so it only moves on actual trades, and the
+# vol factor makes one threshold meaningful across instruments as different
+# as 2-year notes and crude. Rolls and opened/closed positions always alert
+# regardless of this threshold.
+# Note: iMGP (exact shares and NAV, hourly) is the clean source and usually
+# alerts first; dbmfwatch's ~2-significant-figure shares and estimated NAV
+# can show ~25bp of apparent noise on the largest risk position, so raise
+# this if those emails get chatty.
+ALERT_RISK_THRESHOLD = "0.002"
